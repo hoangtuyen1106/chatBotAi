@@ -1,0 +1,21 @@
+{
+  "name": "chatbotai",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI Chat Bot monorepo root — holds shared tooling (Husky pre-commit) for server and client workspaces.",
+  "scripts": {
+    "prepare": "husky",
+    "lint:server": "npm --prefix server run lint",
+    "typecheck:server": "npm --prefix server run typecheck"
+  },
+  "devDependencies": {
+    "husky": "^9.1.7",
+    "lint-staged": "^15.3.0"
+  },
+  "lint-staged": {
+    "server/src/**/*.ts": [
+      "npm --prefix server run lint -- --fix --max-warnings=0",
+      "npm --prefix server run format -- --log-level=warn"
+    ]
+  }
+}
