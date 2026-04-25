@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 AI Chat Bot website with document-grounded RAG. Users can register, upload documents (PDF / DOCX / CSV / TXT), and chat with an LLM that answers using their uploaded content as context.
 
-**Status:** Phases 0–4 complete. Auth + document upload + ingestion + RAG chat (SSE streaming with citations) all verified end-to-end against local Ollama (`qwen2.5:14b` chat, `bge-m3` embeddings). Phase 5 (frontend scaffold) is next.
+**Status:** Phases 0–5 complete. Backend (auth + upload + ingest + RAG chat SSE) and frontend (Vite + React + TS + Tailwind + shadcn/ui app shell with chat / documents / auth pages) all verified end-to-end against local Ollama (`qwen2.5:14b` chat, `bge-m3` embeddings). Phase 6 (landing + scroll animations + UI polish) is next.
 
 ## Current Status (updated 2026-04-25)
 
@@ -17,6 +17,24 @@ AI Chat Bot website with document-grounded RAG. Users can register, upload docum
 - [server/src/routes/auth.ts](server/src/routes/auth.ts) — `POST /auth/register`, `POST /auth/login`; `express-rate-limit` mounted on the router.
 - [server/src/middleware/requireAuth.ts](server/src/middleware/requireAuth.ts) — Bearer JWT → `req.userId`.
 - Verified: register/dup/login/wrong-pw/short-pw/unknown-field/citext-case-insensitive all return correct status; `/health/ready` reports postgres ok.
+
+### Phase 5 (Frontend scaffold) — done
+- Vite 6 + React 18 + TS strict + project references (`tsconfig.json` + `tsconfig.app.json` + `tsconfig.node.json`); `@/*` path alias; dev proxy `/api/*` → `http://localhost:4000` (avoids CORS in dev).
+- Tailwind CSS 3 + CSS-variable theme tokens in [client/src/index.css](client/src/index.css) (light + dark modes, accent = HSL primary), `tailwindcss-animate` plugin.
+- shadcn/ui primitives **hand-written** (CLI not used — alias already configured): [button](client/src/components/ui/button.tsx), [input](client/src/components/ui/input.tsx), [label](client/src/components/ui/label.tsx), [card](client/src/components/ui/card.tsx), [textarea](client/src/components/ui/textarea.tsx), [toast](client/src/components/ui/toast.tsx), [scroll-area](client/src/components/ui/scroll-area.tsx) + [lib/utils.ts](client/src/lib/utils.ts) `cn()`.
+- Routing via `react-router-dom@7`: `/login`, `/register`, `/chat`, `/chat/:id`, `/documents`. [ProtectedRoute](client/src/lib/auth.tsx) redirects to `/login` with `state.from` for post-login bounce.
+- Auth: [lib/auth.tsx](client/src/lib/auth.tsx) `AuthProvider` decodes JWT payload to populate `user`; [lib/api.ts](client/src/lib/api.ts) attaches `Authorization: Bearer <token>` and clears + notifies subscribers on 401.
+- Toast system: tiny imperative store at [lib/toast.ts](client/src/lib/toast.ts) + [Toaster.tsx](client/src/components/Toaster.tsx) consuming Radix Toast primitive — no Provider wiring per call.
+- Pages: [LoginPage](client/src/pages/LoginPage.tsx) + [RegisterPage](client/src/pages/RegisterPage.tsx) (RHF + zod-resolver mirroring server schema), [DocumentsPage](client/src/pages/DocumentsPage.tsx) (drag-drop + 25 MB / MIME-allowlist client mirror + 2 s polling on `pending`/`processing`), [ChatPage](client/src/pages/ChatPage.tsx) (sticky-scroll, Enter-to-send, abort-mid-stream, collapsible citations, history sidebar).
+- SSE client [lib/chatStream.ts](client/src/lib/chatStream.ts) — chunked-buffer parser splitting on `\n\n`, dispatches `open`/`start`/`delta`/`done`/`error`, ignores `: ping` heartbeats, supports `AbortSignal`.
+- App chrome: [AppShell](client/src/components/AppShell.tsx) (top header desktop, bottom tab bar mobile), [HistorySidebar](client/src/components/HistorySidebar.tsx).
+- Verified: `npm run typecheck` ✅, `npm run build` ✅ (354 KB JS / 18.7 KB CSS gzipped → 108 KB / 4.6 KB), `npm run dev` serves `/login` `/register` `/chat` `/documents` (200), `/api/*` proxy hits backend, login round-trip via proxy returns JWT, `/chat/stream` SSE via proxy emits `start` (1 citation) → `delta` x N for the same Vietnamese question used in Phase 4.
+
+⚠ Known follow-ups
+- JWT in localStorage — flagged for migration to httpOnly cookie + refresh token in Phase 7 (XSS surface).
+- No code-splitting yet — `index-*.js` is one 354 KB chunk. Phase 6/7 can split routes via `React.lazy` once landing/marketing routes land.
+- Dark mode toggle UI not wired (CSS vars exist for `.dark`); deferred to Phase 6 polish.
+- ESLint not set up for client (server has flat config; client just relies on `tsc`). Add Phase 7.
 
 ### Phase 4 (RAG chat) — done
 - Migration [server/migrations/1714000020000_create-chats-and-messages.cjs](server/migrations/1714000020000_create-chats-and-messages.cjs) — `chats(id, user_id, title, created_at, updated_at)` + `messages(id, chat_id, user_id, role enum, content, citations jsonb, truncated bool, created_at)` with `(chat_id, created_at)` and `(user_id, updated_at)` indexes.
@@ -87,25 +105,20 @@ AI Chat Bot website with document-grounded RAG. Users can register, upload docum
 | Auth (Phase 2) | ✅ **Done** — register / login / JWT / rate-limit / requireAuth verified |
 | Upload + ingestion (Phase 3) | ✅ **Done** — `POST /upload` → S3 → Bull → parse → chunk → embed (Ollama) → pgvector upsert with HNSW index → `status=ready`. Pinecone adapter is a stub. |
 | RAG chat (Phase 4) | ✅ **Done** — SSE streaming, citations, history, Redis cache, cross-user isolation verified |
-| Frontend scaffold (Phase 5) | ⏳ **Not started** — [client/](client/) is still a placeholder; **next phase** |
-| Landing + polish (Phase 6) | ⏳ **Not started** |
+| Frontend scaffold (Phase 5) | ✅ **Done** — Vite + React + Tailwind + shadcn/ui; auth, chat (SSE), documents, history all wired through Vite `/api` proxy |
+| Landing + polish (Phase 6) | ⏳ **Not started** — **next phase** |
 | Prod hardening + CI (Phase 7) | ⏳ **Not started** |
 
-### ⏭ Next steps (Phase 5 — Frontend scaffold)
-1. Init Vite + React + TS in [client/](client/): `npm create vite@latest client -- --template react-ts` (or scaffold manually so we don't recreate the existing folder). Add `npm run dev`/`build`/`preview` scripts.
-2. Tailwind CSS + CSS variables: install tailwind/postcss/autoprefixer, init config, add CSS variable accent color in `client/src/index.css` (matches shadcn convention).
-3. shadcn/ui init: `npx shadcn@latest init` (puts components in `client/src/components/ui/`), then add: `button`, `input`, `label`, `card`, `textarea`, `toast`, `dialog`, `dropdown-menu`, `scroll-area`.
-4. Routing: `react-router-dom` with `/login`, `/register`, `/chat`, `/chat/:id`, `/documents`. Protected route wrapper that redirects to `/login` if no JWT in storage.
-5. JWT storage decision: localStorage (simple, susceptible to XSS) vs in-memory + refresh token (Phase 7). Phase 5 v1: localStorage with a `useAuth` hook; flag in known-followups to migrate to httpOnly cookie + refresh in Phase 7.
-6. API client (fetch wrapper) at `client/src/lib/api.ts` — attaches `Authorization: Bearer <token>`, handles 401 by clearing token + redirecting.
-7. Auth pages (`/login`, `/register`) — shadcn forms, zod-resolver client-side validation mirroring server zod schema, error toasts on 4xx.
-8. Documents page (`/documents`) — list from `GET /documents`, drag-drop upload (mirror MIME allowlist + size cap from env client-side), polling `status=processing` rows every 2 s until `ready`/`failed`.
-9. Chat UI (`/chat[/:id]`) — message list (sticky-scroll-to-bottom unless user scrolls up), streaming input via `fetch` + `ReadableStream` consuming `POST /chat/stream` SSE (parse `event:`/`data:` lines, dispatch by event name); typing indicator while in-flight; collapsible citation list under each assistant message linking to the document.
-10. History sidebar — `GET /history` with infinite scroll via `?before=<updatedAt>&limit=30`; clicking a chat loads `GET /chats/:id/messages`.
-11. Mobile-first responsive verify at 360 px (rule from [ui-ux.md](.claude/rules/ui-ux.md)): chat input, message list, upload, auth forms all usable on touch.
-12. Smoke test: register → upload sample.txt → wait `ready` → ask question → see streaming response with citation badges.
+### ⏭ Next steps (Phase 6 — Landing page & UI polish)
+1. Public landing route at `/` (currently `<Navigate to="/chat">`); refactor `App.tsx` so `/` is a marketing `LandingPage` and protected app moves to `/app/*` (or keep `/` public and put authed app at `/chat`/`/documents`). Decide based on whether unauthenticated users should land on marketing or login.
+2. Sections (mobile-first, 360 px verified): hero (headline + CTA → `/register`), features grid (3–4 cards: Q&A on your docs, multi-format ingest, citations, local-first), how-it-works (upload → chunk+embed → ask), CTA footer.
+3. Scroll animations on **every** landing section via `IntersectionObserver` or Framer Motion `whileInView`. Honor `prefers-reduced-motion` (skip animation, render at final state). Durations ≤ 500 ms.
+4. Dark mode toggle UI: hook into `.dark` class on `<html>`, store preference in localStorage. Reuse existing CSS variables in [client/src/index.css](client/src/index.css).
+5. Accessibility pass: focus-visible rings (already in primitives), aria-label on icon-only buttons (header logout — done; verify chat send/stop), keyboard nav (tab through send button, citation toggles), `lang="vi"` on `<html>` (done).
+6. Polish: code-split landing vs app via `React.lazy` to drop initial bundle (currently 354 KB → likely 100 KB landing + 250 KB app), add skeletons for the 200–400 ms before history/documents lists appear, animate message-bubble entrance (`animate-fade-in` already defined in tailwind config).
+7. Mobile verify @ 360 px on each new landing section + recheck chat input doesn't overflow.
 
-After Phase 5, Phase 6 (landing + scroll animations) and Phase 7 (prod hardening + CI).
+After Phase 6: Phase 7 (CI lint→typecheck→test→build, ESLint for client, prod-grade JWT cookie+refresh, finalize Dockerfiles, rate-limits on every public endpoint, structured logs review).
 
 ### ⚠ Known follow-ups / caveats (live)
 - Root `.env` is **not** committed (by design). Copy [.env.example](.env.example) → `.env` before `docker compose up` or local `npm run dev`; zod loader fails fast otherwise.
@@ -143,6 +156,16 @@ After Phase 5, Phase 6 (landing + scroll animations) and Phase 7 (prod hardening
 - **`citext` for `users.email`.** Case-insensitive comparison enforced by the type, so `ALICE@example.com` and `alice@example.com` collide on the unique constraint without custom lower() logic in queries.
 - **Constant-time dummy hash on login miss.** [auth.ts](server/src/services/auth.ts) compares against a fixed bcrypt hash when the email isn't found, so timing doesn't leak which emails exist. Uses ~same CPU as a real bcrypt compare.
 - **JWT in Authorization header (Bearer), not cookies.** Phase 2 is API-only; cookie + CSRF complexity is unwarranted until Phase 5 introduces a browser SPA. Revisit cookie strategy when wiring the frontend.
+
+### Frontend scaffold (Phase 5)
+- **Hand-write shadcn primitives instead of `npx shadcn@latest init`.** Init CLI prompts for path aliases / colour scheme and writes `components.json`. Our Vite alias `@/*` and Tailwind theme were already configured manually; copying the small set of primitives we need is faster and avoids dragging in `components.json` + the CLI's defaults that don't match our existing tokens. Future additions can still use the CLI without breaking these primitives.
+- **JWT in localStorage (Phase 5 v1).** Avoids httpOnly-cookie + CSRF + refresh-token complexity for an internal dev app. Trade-off: any XSS executes with the user's bearer. Migration to httpOnly cookies + short-lived access + refresh token logged as Phase 7 follow-up.
+- **Vite dev proxy `/api/*` → `localhost:4000`.** Frontend always calls relative `/api/...` so production deploy can swap origins without code changes. Avoids CORS round-trips during local dev (browser sees same-origin from `localhost:5173`).
+- **SSE consumed via `fetch` + `ReadableStream` (not native `EventSource`).** Native `EventSource` only supports GET; our `POST /chat/stream` carries the message in the body. fetch's `ReadableStream` works with POST and handles abort cleanly via `AbortController`.
+- **Imperative toast store, not React context per-toast.** A tiny module-level subscriber list ([lib/toast.ts](client/src/lib/toast.ts)) lets non-React code (api error handler, stream callbacks) call `toast({ ... })` directly, no `useToast()` hook needed at the call site.
+- **JWT decoded on the client to populate `user.email` without a `/me` round trip.** Token signature isn't verified client-side — the server still verifies on every request. We use the payload only for display.
+- **Sticky-to-bottom auto-scroll with a "scrolled-up" guard.** Standard chat UX: user scrolling up to read history must NOT be yanked back when new tokens stream. We track distance-from-bottom < 80 px to decide whether to auto-scroll.
+- **Message bubble accumulates `delta`s in React state directly.** No virtual list needed at chat-history scale (≤ 200 messages); `whitespace-pre-wrap` handles long content. Revisit if a single chat exceeds 1000 messages.
 
 ### RAG chat (Phase 4)
 - **SSE over WebSocket.** Chat is a one-way stream of tokens; SSE works through Express middleware unchanged, doesn't need a separate upgrade handshake, and reconnects via standard HTTP. WebSocket only buys us bidirectional events we don't need yet (typing indicators from server, multi-user rooms). Revisit if those land.
@@ -214,12 +237,12 @@ Work top-down. Do not skip a phase until every item in it is checked. Mark `[x]`
 - [x] Rate-limit chat endpoint (separate limiter on `/chat` + `/chats/*`).
 
 ### Phase 5 — Frontend scaffold (`/client`)
-- [ ] Vite + React + TS project with **Tailwind CSS** for styling and **shadcn/ui** for components (init via `npx shadcn@latest init`; generated components live in `client/src/components/ui/`).
-- [ ] Auth pages (register / login), JWT stored securely, protected routes.
-- [ ] Chat page: message list, streaming input, loading/typing indicator, citation display.
-- [ ] Upload UI with drag-and-drop, progress, file-type/size validation mirrored client-side.
-- [ ] History view.
-- [ ] WebSocket/SSE client for streaming.
+- [x] Vite + React + TS project with **Tailwind CSS** for styling and **shadcn/ui** primitives (hand-written into `client/src/components/ui/` — `button`, `input`, `label`, `card`, `textarea`, `toast`, `scroll-area`).
+- [x] Auth pages (register / login), JWT in localStorage (`useAuth` + `ProtectedRoute`), 401 auto-logout via `subscribeUnauthorized`.
+- [x] Chat page: message list with sticky-scroll-to-bottom-unless-scrolled-up, streaming input (Enter to send), typing indicator while in-flight, collapsible citations under each assistant message.
+- [x] Upload UI with drag-and-drop, MIME + size mirror, polling every 2 s while documents have `pending`/`processing` status.
+- [x] History sidebar (`GET /history`); clicking a chat loads `GET /chats/:id/messages`.
+- [x] SSE client via `fetch` + `ReadableStream` consuming `POST /chat/stream` (parses `event:`/`data:` lines, dispatches by event name, supports `AbortController`).
 
 ### Phase 6 — Landing page & UI polish
 - [ ] Minimal, modern, professional landing page (hero, features, how-it-works, CTA).
