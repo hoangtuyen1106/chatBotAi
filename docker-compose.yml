@@ -85,6 +85,12 @@ services:
       - ./server:/app
       - /app/node_modules
     command: npm run dev
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:4000/health/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   worker:
     build:
@@ -108,6 +114,14 @@ services:
       - ./server:/app
       - /app/node_modules
     command: npm run worker
+    healthcheck:
+      # Liveness only — checks the Node process is alive. Bull queue depth
+      # would need a side HTTP endpoint to probe properly; defer.
+      test: ["CMD-SHELL", "pidof node > /dev/null || pidof tsx > /dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
 volumes:
   postgres-data:

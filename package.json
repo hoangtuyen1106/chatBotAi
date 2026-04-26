@@ -6,7 +6,9 @@
   "scripts": {
     "prepare": "husky",
     "lint:server": "npm --prefix server run lint",
-    "typecheck:server": "npm --prefix server run typecheck"
+    "lint:client": "npm --prefix client run lint",
+    "typecheck:server": "npm --prefix server run typecheck",
+    "typecheck:client": "npm --prefix client run typecheck"
   },
   "devDependencies": {
     "husky": "^9.1.7",
@@ -16,6 +18,9 @@
     "server/src/**/*.ts": [
       "npm --prefix server run lint -- --fix --max-warnings=0",
       "npm --prefix server run format -- --log-level=warn"
+    ],
+    "client/src/**/*.{ts,tsx}": [
+      "npm --prefix client run lint -- --fix --max-warnings=0"
     ]
   }
 }

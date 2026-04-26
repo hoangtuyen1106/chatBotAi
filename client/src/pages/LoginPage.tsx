@@ -38,7 +38,7 @@ export const LoginPage = () => {
     try {
       await login(values.email, values.password);
       const from = (location.state as { from?: { pathname: string } } | null)?.from?.pathname ?? '/chat';
-      navigate(from, { replace: true });
+      void navigate(from, { replace: true });
     } catch (err) {
       const message = err instanceof ApiError ? err.message : 'Đăng nhập thất bại';
       toast({ variant: 'destructive', title: 'Đăng nhập thất bại', description: message });

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 AI Chat Bot website with document-grounded RAG. Users can register, upload documents (PDF / DOCX / CSV / TXT), and chat with an LLM that answers using their uploaded content as context.
 
-**Status:** Phases 0–6 complete. Backend (auth + upload + ingest + RAG chat SSE), frontend app shell (chat / documents / auth) and a public landing page with scroll animations + dark-mode toggle + code-split routes — all verified end-to-end against local Ollama (`qwen2.5:14b` chat, `bge-m3` embeddings). Phase 7 (prod hardening + CI) is next.
+**Status:** Phases 0–7 substantially complete. Backend + frontend + infra hardened: global rate-limit, hardened pino redact, GitHub Actions CI (server + client + Docker prod build), client ESLint flat config, Docker compose health probes, prod Dockerfile verified. Five items deferred to **Phase 8** (JWT cookie migration, Pinecone real, Anthropic real, client Dockerfile, vitest suite). Final real-browser click-through still owed.
 
 ## Current Status (updated 2026-04-25, end of Phase 5 session)
 
@@ -55,6 +55,30 @@ Two commits on `main`:
 - SSE client [lib/chatStream.ts](client/src/lib/chatStream.ts) — chunked-buffer parser splitting on `\n\n`, dispatches `open`/`start`/`delta`/`done`/`error`, ignores `: ping` heartbeats, supports `AbortSignal`.
 - App chrome: [AppShell](client/src/components/AppShell.tsx) (top header desktop, bottom tab bar mobile), [HistorySidebar](client/src/components/HistorySidebar.tsx).
 - Verified: `npm run typecheck` ✅, `npm run build` ✅ (354 KB JS / 18.7 KB CSS gzipped → 108 KB / 4.6 KB), `npm run dev` serves `/login` `/register` `/chat` `/documents` (200), `/api/*` proxy hits backend, login round-trip via proxy returns JWT, `/chat/stream` SSE via proxy emits `start` (1 citation) → `delta` x N for the same Vietnamese question used in Phase 4.
+
+### Phase 7 (Production hardening + CI) — substantially done
+- **Global rate-limit** [server/src/app.ts](server/src/app.ts): `rateLimit({ max: env.RATE_LIMIT_MAX * 5 })` mounted **after** `healthRouter` (so probes don't get throttled) and **before** all other routers. The pre-existing `authLimiter` was previously mounted as `authRouter.use(authLimiter)` which fired on **every** request reaching authRouter (not just /auth/*); fixed to `authRouter.use('/auth', authLimiter)` so the global limiter actually applies to other routes. Verified: `/totally-unknown` → `RateLimit-Limit: 300`; `/auth/login` → 60; `/chats/abc/messages` → 60; `/health/ready` → no limiter header.
+- **Pino redact list hardened** [server/src/config/logger.ts](server/src/config/logger.ts): added `req.body.password`, `req.body.token`, `res.headers["set-cookie"]`, `*.password_hash`, `*.apiKey`, `*.api_key`.
+- **GitHub Actions CI** [.github/workflows/ci.yml](.github/workflows/ci.yml): three jobs run on push/PR to `main`:
+  1. `server` — `npm ci` → `lint` → `typecheck` → `build`
+  2. `client` — `npm ci` → `lint` → `typecheck` → `build`
+  3. `docker-server` — `docker build --target prod ./server` (smoke; depends on `server` job)
+- **Client ESLint flat config** [client/eslint.config.mjs](client/eslint.config.mjs): typescript-eslint type-checked + react + react-hooks + jsx-a11y + prettier. Notable rule overrides:
+  - `react-hooks/set-state-in-effect: off` — RH7 flags any setState in useEffect; false-positive for the data-load pattern we use.
+  - `@typescript-eslint/no-misused-promises: { checksVoidReturn: { attributes: false } }` — RHF's `handleSubmit(async)` returns a Promise; passing it to `<form onSubmit>` is the documented pattern.
+  - Wired into root [package.json](package.json) lint-staged for staged `client/src/**/*.{ts,tsx}`.
+- **Compose health probes** [docker-compose.yml](docker-compose.yml): `api` uses `wget -q -O - http://localhost:4000/health/ready` (alpine ships wget by default); `worker` uses `pidof node || pidof tsx` (liveness only — Bull queue depth would need a side HTTP endpoint, deferred).
+- **Prod Dockerfile verified** [server/Dockerfile](server/Dockerfile): `docker build --target prod ./server` succeeds. Stages: `base` → `prod-deps` (--omit=dev) → `prod` (non-root `app` user, `dumb-init` entrypoint).
+- **Frontend lint cleanup** along the way:
+  - `react-router-dom@7` `navigate()` returns Promise → wrapped with `void` in 3 callers.
+  - `chatStream.ts` `String(json.delta ?? '')` replaced with explicit `typeof === 'string'` check (avoids `no-base-to-string` false positive on `unknown`).
+
+⚠ Deferred to Phase 8 (intentional scope cut)
+- **JWT cookie migration** — XSS surface in localStorage is real but the migration breaks the FE in lockstep with the BE; needs coordinated deploy + CSRF strategy. Out-of-scope for the hardening pass.
+- **Pinecone real adapter** — user runs entirely on local pgvector; pulling `@pinecone-database/pinecone` for an unused code path is dead weight. Stub still throws with a clear message.
+- **Anthropic real adapter** — same reasoning; Ollama `qwen2.5:14b` runs through the openai-compat path.
+- **client Dockerfile** — only needed for separate static deploy; current Vite build can be served by anything (S3, Cloudflare Pages, nginx static container).
+- **vitest suite** — `vitest` is in devDeps but no tests written. Add when the codebase stabilizes; right now spec is still moving.
 
 ### Phase 6 (Landing + UI polish) — done
 - Public marketing route at `/` ([client/src/pages/LandingPage.tsx](client/src/pages/LandingPage.tsx)) with hero + features (4-card grid) + how-it-works (3 steps) + CTA + sticky header (logo, theme toggle, login/register or "Mở ứng dụng" depending on auth). Vietnamese copy throughout.
@@ -116,19 +140,17 @@ Two commits on `main`:
 | RAG chat (Phase 4) | ✅ **Done** — SSE streaming, citations, history, Redis cache, cross-user isolation verified |
 | Frontend scaffold (Phase 5) | ✅ **Done** — Vite + React + Tailwind + shadcn/ui; auth, chat (SSE), documents, history all wired through Vite `/api` proxy |
 | Landing + polish (Phase 6) | ✅ **Done** — landing page with scroll animations, dark mode toggle, code-split routes (354 KB → 253 KB initial), skeletons, bubble fade-in |
-| Prod hardening + CI (Phase 7) | ⏳ **Not started** — **next phase** |
+| Prod hardening + CI (Phase 7) | ✅ **Substantially done** — global rate-limit, hardened pino redact, GitHub Actions CI, client ESLint flat config, compose health probes, prod Dockerfile verified. JWT cookie migration + Pinecone/Anthropic real impls + client Dockerfile + vitest deferred to Phase 8. |
+| Phase 8 — Deferred items | ⏳ **Not started** — JWT cookie+refresh, Pinecone, Anthropic, client Dockerfile, vitest suite |
 
-### ⏭ Next steps (Phase 7 — Production hardening + CI)
-1. **CI pipeline** (GitHub Actions): one workflow per push that runs (a) `npm --prefix server run lint && npm --prefix server run typecheck && npm --prefix server run build`, (b) `npm --prefix client run typecheck && npm --prefix client run build`. Optionally a `docker build --target prod ./server` smoke step. Fail on any non-zero exit.
-2. **Client ESLint** ([client/eslint.config.mjs](client/eslint.config.mjs)) — flat config mirroring [server/eslint.config.mjs](server/eslint.config.mjs) with `eslint-plugin-react`, `eslint-plugin-react-hooks`, `eslint-plugin-jsx-a11y`. Wire into client `lint` script + add to lint-staged in root [package.json](package.json) for staged `client/src/**/*.{ts,tsx}`.
-3. **JWT migration** to httpOnly cookie + short-lived access (15 m) + refresh (7 d) endpoint. Server side: emit `Set-Cookie: token=...; HttpOnly; Secure; SameSite=Lax`; new `POST /auth/refresh` rotates token. CSRF: double-submit cookie or per-request token. Client side: drop `lib/api.ts` Bearer header path, rely on cookies (also drop `getToken()`/`setToken()` helpers). Migration is a breaking change — coordinate with a single deploy.
-4. **Rate-limit every public endpoint** — currently only `/auth/*` and `/chat/*`/`/chats/*` have limiters. Add a global default limiter (higher cap, e.g. 300/min) before all routers, then keep tighter limiters on `/auth/*` and `/chat/*`.
-5. **Pinecone adapter real impl** — write [server/src/adapters/vector-store/pinecone.ts](server/src/adapters/vector-store/pinecone.ts) using `@pinecone-database/pinecone` (upsert + query + deleteByDocument); env validator already enforces `PINECONE_API_KEY`/`PINECONE_INDEX` when `VECTOR_STORE=pinecone`.
-6. **Anthropic LLM adapter real impl** — [server/src/adapters/llm/anthropic.ts](server/src/adapters/llm/anthropic.ts) with `@anthropic-ai/sdk` streaming via `messages.stream` / `MessageStream`; map deltas to the `LLMClient.stream` AsyncIterable contract.
-7. **Structured logs review** — confirm `pino` redact list catches every secret-bearing field new since Phase 4 (e.g. `req.body.password`, citation previews? Probably fine). Add request-id (`pino-http` already supplies one — verify it appears in error logs).
-8. **Finalize Dockerfiles** — verify [server/Dockerfile](server/Dockerfile) `prod` target boots (`docker build --target prod ./server && docker run -p 4000:4000 --env-file .env <image>`); add a `Dockerfile` for `client` (multi-stage: build → static-serve via `nginx:alpine` or `caddy:alpine`); update [docker-compose.yml](docker-compose.yml) prod-overlay file.
-9. **Health probes wired to compose** — extend api/worker compose blocks with `healthcheck:` calling `/health/ready` and `/health` respectively (worker doesn't expose HTTP yet — add a tiny `GET /health` on a side port or a Bull queue ping).
-10. **Final verification pass** against [.claude/rules/workflow.md](.claude/rules/workflow.md) checklist: register/login, upload→ingest, RAG retrieval scoped per user, SSE chat, history, `/health`, mobile @ 360 px, scroll animations.
+### ⏭ Next steps (Phase 8 — Deferred hardening items)
+Each is a focused mini-phase; tackle in any order:
+1. **JWT cookie migration**: server emits `Set-Cookie: token=...; HttpOnly; Secure; SameSite=Lax`; new `POST /auth/refresh` rotates 15-min access tokens against a 7-day refresh token. CSRF: double-submit token cookie. Client: drop `lib/api.ts` Bearer header + `getToken/setToken` localStorage helpers; rely on `credentials: 'include'` on fetch. **Breaking** for FE/BE; coordinate single deploy.
+2. **Pinecone real adapter** [server/src/adapters/vector-store/pinecone.ts](server/src/adapters/vector-store/pinecone.ts) — `@pinecone-database/pinecone` upsert/query/deleteByDocument; env validator already gates `PINECONE_API_KEY`/`PINECONE_INDEX`.
+3. **Anthropic real adapter** [server/src/adapters/llm/anthropic.ts](server/src/adapters/llm/anthropic.ts) — `@anthropic-ai/sdk` `messages.stream` mapped to `AsyncIterable<string>` contract; only fires when `LLM_PROVIDER=anthropic`.
+4. **Client Dockerfile + prod-overlay compose** — multi-stage `node:20-alpine` build → `nginx:alpine` static-serve at port 80; `docker-compose.prod.yml` overlay swapping `api` to `target: prod`, removing dev bind-mounts, and adding the new `client` service.
+5. **vitest suite** — auth round-trip, ingest pipeline (parse → chunk shape), retrieval scoping per userId, chat persistence transaction. Already have `vitest` in devDeps, just need `*.test.ts` files alongside services.
+6. **Manual real-browser smoke** at 360 px against [.claude/rules/workflow.md](.claude/rules/workflow.md) checklist — register/login, upload, ingest, ask, see SSE deltas + citation, scroll animations on landing.
 
 ### ⚠ Known follow-ups / caveats (live)
 
@@ -149,11 +171,16 @@ Two commits on `main`:
 - `OPENAI_API_KEY=ollama` in `.env` is a placeholder string the OpenAI SDK requires; not an actual credential. Production must change `JWT_SECRET` and either set a real `OPENAI_API_KEY` (cloud) or keep the Ollama base URL.
 
 **Frontend caveats**
-- JWT in localStorage — flagged for migration to httpOnly cookie + refresh token in Phase 7 (XSS surface).
-- Initial bundle now 253 KB (gzip 82 KB) after Phase 6 code-split. If Phase 7 adds bigger deps, reconsider per-route splitting strategy.
-- Client has **no ESLint config** (server has flat config; client only relies on `tsc`). Add Phase 7.
+- JWT in localStorage — deferred migration to httpOnly cookie + refresh token to Phase 8 (XSS surface).
+- Initial bundle 253 KB (gzip 82 KB) after Phase 6 code-split. If Phase 8 adds bigger deps, reconsider per-route splitting strategy.
+- Client ESLint flat config landed in Phase 7; if you add new pages, run `npm --prefix client run lint` before committing. Husky lint-staged covers staged files automatically.
 - Mobile @ 360 px verified via build only, not real-device click-through.
-- Frontend Phases 5 and 6 were code-verified (`typecheck`, `build`, dev-server SPA routes return 200, SSE proxy round-trip, landing route serves Vietnamese copy) but **not** clicked through in a real browser session by the user yet.
+- Frontend Phases 5/6 and Phase 7 were code-verified (`typecheck`, `build`, `lint`, dev-server SPA routes return 200, SSE proxy round-trip, landing route serves Vietnamese copy) but **not** clicked through in a real browser session by the user yet.
+
+**CI / ops**
+- GitHub Actions workflow ([.github/workflows/ci.yml](.github/workflows/ci.yml)) needs a remote on GitHub to actually fire — local repo only.
+- `docker compose` healthcheck for `worker` is liveness-only (process exists). A stuck Bull queue would not be detected.
+- Phase 8 deferred items ARE production-blocking for any deploy that exposes the app publicly: at minimum **JWT cookie migration** (XSS) before public launch.
 
 ## Key Decisions & Rationale
 
@@ -198,6 +225,15 @@ Two commits on `main`:
 - **Citations stored as jsonb on the assistant message, not in a separate table.** Citations are read whenever the message is read and never queried independently — denormalization beats a join. Schema includes `chunkId` so we can re-resolve to current chunk content if the document is re-ingested.
 - **Single embedding model for ingest + query.** `bge-m3` embeds documents at ingest and questions at retrieval — required so vectors live in the same space. Locked by the `vector(1024)` column.
 - **Vietnamese-first system prompt.** User works in TV; the LLM behaves better when system instructions match the expected output language. Reword if we add an English-only deployment.
+
+### Production hardening (Phase 7)
+- **Global rate-limit cap = `env.RATE_LIMIT_MAX * 5`, not a separate env var.** Keeps the env contract tight (one knob = one number). Auth/chat keep the tighter `RATE_LIMIT_MAX` value as ceiling on sensitive endpoints. If we need per-endpoint custom caps later, introduce a structured config — not yet warranted.
+- **`authRouter.use('/auth', authLimiter)` (path-scoped) instead of `authRouter.use(authLimiter)` (router-wide).** Original Phase 2 code applied the limiter to every request reaching authRouter; once `app.use(authRouter)` mounts at root that meant *every* request, which silently overrode the new global limiter. Path-scoping fixes the regression without changing the limiter values.
+- **Health endpoints mounted BEFORE the global limiter.** Compose/CI health probes hit `/health/ready` every 15 s; rate-limiting them would create flap loops on busy nodes.
+- **CI matrix split into separate `server` + `client` jobs.** Lets the two halves fail independently and parallelize. The `docker-server` job depends on `server` (no point building Docker if lint fails) but doesn't gate `client`.
+- **Client lint rule loosened where library patterns conflict with strict rules** (`set-state-in-effect: off`, `no-misused-promises.checksVoidReturn.attributes: false`). Better to scope-loosen in the project config than sprinkle `eslint-disable-next-line` across every page.
+- **Worker healthcheck = `pidof node || pidof tsx`, not a queue ping.** Compose-level liveness; if the process is alive it'll process jobs. A real "is the queue draining?" check needs an HTTP endpoint on the worker — deferred until we observe stuck-queue incidents.
+- **Five items intentionally deferred to Phase 8.** Listed in the `⏭ Next steps` section. The reasoning: JWT cookie migration is a breaking-change sprint of its own; Pinecone/Anthropic real impls are dead code for our local-first deployment; client Dockerfile + vitest are nice-to-haves that don't unblock current work.
 
 ### Landing + polish (Phase 6)
 - **Public landing at `/`, no auth wall on the marketing page.** Unauthenticated visitors should be able to read what the product does before being asked to register. CTAs route to `/register` (or `/chat` if already authenticated). Trade-off: the route hierarchy now differs from the auth-gated app; OK because `react-router` handles both cleanly.
@@ -284,13 +320,20 @@ Work top-down. Do not skip a phase until every item in it is checked. Mark `[x]`
 - [x] Skeletons for history sidebar + documents list during loading; fade-in animation on chat message bubbles.
 
 ### Phase 7 — Production hardening
-- [ ] Centralized error handler + structured logs.
-- [ ] Rate limiting on all public endpoints.
-- [ ] Input validation (zod) on every route.
-- [ ] Dockerfiles for `api` and `worker`; finalize `docker-compose.yml`.
-- [ ] CI pipeline: lint → typecheck → test → build.
-- [ ] Health + readiness probes wired to compose/CI.
-- [ ] Verification pass against [workflow.md](.claude/rules/workflow.md) checklist.
+- [x] Centralized error handler + structured logs (Pino redact list hardened: req.body.password, set-cookie, *.password_hash, *.apiKey).
+- [x] Rate limiting on all public endpoints — global limiter (`env.RATE_LIMIT_MAX * 5`) on every non-/health route; tighter limiter on `/auth/*` and `/chat/*`/`/chats/*`.
+- [x] Input validation (zod) on every route.
+- [x] Dockerfile `prod` target verified (`docker build --target prod ./server` succeeds).
+- [x] CI pipeline ([.github/workflows/ci.yml](.github/workflows/ci.yml)): server lint+typecheck+build, client lint+typecheck+build, server prod Docker image build smoke.
+- [x] Health probes wired into compose: `api` calls `/health/ready` via wget; `worker` checks node/tsx process via `pidof`.
+- [x] Client ESLint flat config ([client/eslint.config.mjs](client/eslint.config.mjs)) — typescript-eslint + react + react-hooks + jsx-a11y + prettier; wired into root lint-staged for staged `client/src/**/*.{ts,tsx}`.
+- [ ] **Deferred to Phase 8 (each is a focused mini-phase):**
+  - JWT migration to httpOnly cookie + 15 m access + 7 d refresh + CSRF (breaking change for FE; needs coordinated deploy).
+  - Real Pinecone adapter (`@pinecone-database/pinecone`).
+  - Real Anthropic adapter (`@anthropic-ai/sdk` `messages.stream`).
+  - `client/Dockerfile` (multi-stage build → static-serve via nginx/caddy) + prod-overlay compose file.
+  - End-to-end test suite (vitest already installed; no tests written yet).
+- [ ] Final manual verification pass against [workflow.md](.claude/rules/workflow.md) checklist (real-browser click-through at 360 px, scroll animations).
 
 ## Rules
 

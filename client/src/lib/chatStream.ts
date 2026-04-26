@@ -78,12 +78,14 @@ export const streamChat = async (
           if (pkt.event === 'open') cbs.onOpen?.();
           else if (pkt.event === 'start')
             cbs.onStart?.(json as unknown as { chatId: string; citations: Citation[] });
-          else if (pkt.event === 'delta') cbs.onDelta?.(String(json.delta ?? ''));
+          else if (pkt.event === 'delta')
+            cbs.onDelta?.(typeof json.delta === 'string' ? json.delta : '');
           else if (pkt.event === 'done')
             cbs.onDone?.(
               json as unknown as { messageId: string; assistantContent: string; truncated: boolean },
             );
-          else if (pkt.event === 'error') cbs.onError?.(String(json.message ?? 'stream error'));
+          else if (pkt.event === 'error')
+            cbs.onError?.(typeof json.message === 'string' ? json.message : 'stream error');
         } catch {
           /* skip malformed */
         }

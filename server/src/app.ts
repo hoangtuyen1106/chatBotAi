@@ -2,6 +2,7 @@ import express, { type Express, type Request, type Response } from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
 import compression from 'compression';
+import rateLimit from 'express-rate-limit';
 import { pinoHttp } from 'pino-http';
 
 import { env } from './config/env.js';
@@ -51,7 +52,21 @@ export const createApp = (): Express => {
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
+  // Health endpoints stay un-rate-limited so probes don't get throttled.
   app.use(healthRouter);
+
+  // Global default limiter: applies to every non-/health route. /auth/* and
+  // /chat/* mount their own tighter limiter (env.RATE_LIMIT_MAX) on top.
+  app.use(
+    rateLimit({
+      windowMs: env.RATE_LIMIT_WINDOW_MS,
+      max: env.RATE_LIMIT_MAX * 5,
+      standardHeaders: true,
+      legacyHeaders: false,
+      message: { error: 'rate_limited', message: 'Too many requests, slow down.' },
+    }),
+  );
+
   app.use(authRouter);
   app.use(uploadRouter);
   app.use(chatRouter);

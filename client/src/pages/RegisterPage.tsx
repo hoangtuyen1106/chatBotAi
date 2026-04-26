@@ -36,7 +36,7 @@ export const RegisterPage = () => {
     setSubmitting(true);
     try {
       await registerUser(values.email, values.password);
-      navigate('/chat', { replace: true });
+      void navigate('/chat', { replace: true });
     } catch (err) {
       const message = err instanceof ApiError ? err.message : 'Đăng ký thất bại';
       toast({ variant: 'destructive', title: 'Đăng ký thất bại', description: message });

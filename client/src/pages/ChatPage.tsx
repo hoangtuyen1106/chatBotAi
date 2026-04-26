@@ -144,7 +144,7 @@ export const ChatPage = () => {
       setStreaming(false);
       abortRef.current = null;
       setHistoryKey((k) => k + 1);
-      if (!chatIdParam && acquiredChatId) navigate(`/chat/${acquiredChatId}`, { replace: true });
+      if (!chatIdParam && acquiredChatId) void navigate(`/chat/${acquiredChatId}`, { replace: true });
     }
   }, [input, streaming, chatIdParam, navigate]);
 

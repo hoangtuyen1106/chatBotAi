@@ -16,7 +16,7 @@ const authLimiter = rateLimit({
   message: { error: 'rate_limited', message: 'Too many auth requests, slow down.' },
 });
 
-authRouter.use(authLimiter);
+authRouter.use('/auth', authLimiter);
 
 const validate: RequestHandler = (req, _res, next) => {
   try {
