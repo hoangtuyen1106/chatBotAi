@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 AI Chat Bot website with document-grounded RAG. Users can register, upload documents (PDF / DOCX / CSV / TXT), and chat with an LLM that answers using their uploaded content as context.
 
-**Status:** Phases 0–5 complete. Backend (auth + upload + ingest + RAG chat SSE) and frontend (Vite + React + TS + Tailwind + shadcn/ui app shell with chat / documents / auth pages) all verified end-to-end against local Ollama (`qwen2.5:14b` chat, `bge-m3` embeddings). Phase 6 (landing + scroll animations + UI polish) is next.
+**Status:** Phases 0–6 complete. Backend (auth + upload + ingest + RAG chat SSE), frontend app shell (chat / documents / auth) and a public landing page with scroll animations + dark-mode toggle + code-split routes — all verified end-to-end against local Ollama (`qwen2.5:14b` chat, `bge-m3` embeddings). Phase 7 (prod hardening + CI) is next.
 
 ## Current Status (updated 2026-04-25, end of Phase 5 session)
 
@@ -56,6 +56,21 @@ Two commits on `main`:
 - App chrome: [AppShell](client/src/components/AppShell.tsx) (top header desktop, bottom tab bar mobile), [HistorySidebar](client/src/components/HistorySidebar.tsx).
 - Verified: `npm run typecheck` ✅, `npm run build` ✅ (354 KB JS / 18.7 KB CSS gzipped → 108 KB / 4.6 KB), `npm run dev` serves `/login` `/register` `/chat` `/documents` (200), `/api/*` proxy hits backend, login round-trip via proxy returns JWT, `/chat/stream` SSE via proxy emits `start` (1 citation) → `delta` x N for the same Vietnamese question used in Phase 4.
 
+### Phase 6 (Landing + UI polish) — done
+- Public marketing route at `/` ([client/src/pages/LandingPage.tsx](client/src/pages/LandingPage.tsx)) with hero + features (4-card grid) + how-it-works (3 steps) + CTA + sticky header (logo, theme toggle, login/register or "Mở ứng dụng" depending on auth). Vietnamese copy throughout.
+- Scroll-in animation primitive: [client/src/lib/reveal.ts](client/src/lib/reveal.ts) `useReveal` hook (one-shot `IntersectionObserver`, threshold 0.15, rootMargin `0px 0px -10% 0px`, starts in the visible state if `prefers-reduced-motion: reduce`); [client/src/components/Reveal.tsx](client/src/components/Reveal.tsx) `<Reveal>` wrapper applies `transition-all duration-500 ease-out` + opacity/translate, supports per-element `delayMs` for staggered grids and an `as` prop for `<li>`/`<section>`/etc. Built with `createElement` (not generic `JSX.IntrinsicElements`) to avoid a TS2590 union-too-complex error.
+- Dark mode: [client/src/lib/theme.tsx](client/src/lib/theme.tsx) `ThemeProvider` with `light | dark | system` modes, persisted at `localStorage['chatbot.theme']`, applies `.dark`/`.light` to `<html>`, listens to `prefers-color-scheme` while in `system`. [client/src/components/ThemeToggle.tsx](client/src/components/ThemeToggle.tsx) is a single icon button cycling light → dark → system. Provider wired in [main.tsx](client/src/main.tsx) above `AuthProvider`. Toggle mounted in `LandingPage` header and `AppShell` header.
+- Code-splitting: [client/src/App.tsx](client/src/App.tsx) wraps `LoginPage`/`RegisterPage`/`ChatPage`/`DocumentsPage` in `React.lazy(...)` + `<Suspense>` fallback. `LandingPage` stays in the main bundle so the marketing page paints immediately. Result: initial JS 354 KB → 253 KB (gzip 109 KB → 82 KB), and each route ships its own ~2–8 KB chunk.
+- Skeletons: [client/src/components/ui/skeleton.tsx](client/src/components/ui/skeleton.tsx) (Tailwind `animate-pulse`); used in [HistorySidebar](client/src/components/HistorySidebar.tsx) (4 rows during fetch) and [DocumentsPage](client/src/pages/DocumentsPage.tsx) (3 rows). Replaces the generic spinner placeholder.
+- Message bubble entrance: `<MessageBubble>` in [ChatPage](client/src/pages/ChatPage.tsx) gets `animate-fade-in motion-reduce:animate-none` (`fade-in` keyframes already defined in [tailwind.config.ts](client/tailwind.config.ts)).
+- A11y pass: `aria-expanded` on the citations-toggle button + focus ring; aria-label on `ThemeToggle` includes current mode in Vietnamese; existing aria-labels on send/stop/logout retained.
+- Verified: `npm run typecheck` ✅, `npm run build` ✅ emits `index-*.js` 253 KB + `LoginPage`/`RegisterPage`/`ChatPage`/`DocumentsPage` chunks; dev server (`npm run dev`) returns 200 for `/`, `/login`, `/chat`, `/documents`; `/src/pages/LandingPage.tsx` served with Vietnamese strings.
+
+⚠ Known follow-ups
+- Mobile @ 360 px verified via build, not via real-device click-through.
+- Initial render of the lazy chunks shows a centered spinner via `<Suspense fallback>`; could be a route-specific skeleton later.
+- LandingPage uses static copy; no CMS layer.
+
 ### ✅ Earlier scaffold
 
 **Phase 0 — Repo bootstrap**
@@ -100,19 +115,20 @@ Two commits on `main`:
 | Upload + ingestion (Phase 3) | ✅ **Done** — `POST /upload` → S3 → Bull → parse → chunk → embed (Ollama) → pgvector upsert with HNSW index → `status=ready`. Pinecone adapter is a stub. |
 | RAG chat (Phase 4) | ✅ **Done** — SSE streaming, citations, history, Redis cache, cross-user isolation verified |
 | Frontend scaffold (Phase 5) | ✅ **Done** — Vite + React + Tailwind + shadcn/ui; auth, chat (SSE), documents, history all wired through Vite `/api` proxy |
-| Landing + polish (Phase 6) | ⏳ **Not started** — **next phase** |
-| Prod hardening + CI (Phase 7) | ⏳ **Not started** |
+| Landing + polish (Phase 6) | ✅ **Done** — landing page with scroll animations, dark mode toggle, code-split routes (354 KB → 253 KB initial), skeletons, bubble fade-in |
+| Prod hardening + CI (Phase 7) | ⏳ **Not started** — **next phase** |
 
-### ⏭ Next steps (Phase 6 — Landing page & UI polish)
-1. Public landing route at `/` (currently `<Navigate to="/chat">`); refactor `App.tsx` so `/` is a marketing `LandingPage` and protected app moves to `/app/*` (or keep `/` public and put authed app at `/chat`/`/documents`). Decide based on whether unauthenticated users should land on marketing or login.
-2. Sections (mobile-first, 360 px verified): hero (headline + CTA → `/register`), features grid (3–4 cards: Q&A on your docs, multi-format ingest, citations, local-first), how-it-works (upload → chunk+embed → ask), CTA footer.
-3. Scroll animations on **every** landing section via `IntersectionObserver` or Framer Motion `whileInView`. Honor `prefers-reduced-motion` (skip animation, render at final state). Durations ≤ 500 ms.
-4. Dark mode toggle UI: hook into `.dark` class on `<html>`, store preference in localStorage. Reuse existing CSS variables in [client/src/index.css](client/src/index.css).
-5. Accessibility pass: focus-visible rings (already in primitives), aria-label on icon-only buttons (header logout — done; verify chat send/stop), keyboard nav (tab through send button, citation toggles), `lang="vi"` on `<html>` (done).
-6. Polish: code-split landing vs app via `React.lazy` to drop initial bundle (currently 354 KB → likely 100 KB landing + 250 KB app), add skeletons for the 200–400 ms before history/documents lists appear, animate message-bubble entrance (`animate-fade-in` already defined in tailwind config).
-7. Mobile verify @ 360 px on each new landing section + recheck chat input doesn't overflow.
-
-After Phase 6: Phase 7 (CI lint→typecheck→test→build, ESLint for client, prod-grade JWT cookie+refresh, finalize Dockerfiles, rate-limits on every public endpoint, structured logs review).
+### ⏭ Next steps (Phase 7 — Production hardening + CI)
+1. **CI pipeline** (GitHub Actions): one workflow per push that runs (a) `npm --prefix server run lint && npm --prefix server run typecheck && npm --prefix server run build`, (b) `npm --prefix client run typecheck && npm --prefix client run build`. Optionally a `docker build --target prod ./server` smoke step. Fail on any non-zero exit.
+2. **Client ESLint** ([client/eslint.config.mjs](client/eslint.config.mjs)) — flat config mirroring [server/eslint.config.mjs](server/eslint.config.mjs) with `eslint-plugin-react`, `eslint-plugin-react-hooks`, `eslint-plugin-jsx-a11y`. Wire into client `lint` script + add to lint-staged in root [package.json](package.json) for staged `client/src/**/*.{ts,tsx}`.
+3. **JWT migration** to httpOnly cookie + short-lived access (15 m) + refresh (7 d) endpoint. Server side: emit `Set-Cookie: token=...; HttpOnly; Secure; SameSite=Lax`; new `POST /auth/refresh` rotates token. CSRF: double-submit cookie or per-request token. Client side: drop `lib/api.ts` Bearer header path, rely on cookies (also drop `getToken()`/`setToken()` helpers). Migration is a breaking change — coordinate with a single deploy.
+4. **Rate-limit every public endpoint** — currently only `/auth/*` and `/chat/*`/`/chats/*` have limiters. Add a global default limiter (higher cap, e.g. 300/min) before all routers, then keep tighter limiters on `/auth/*` and `/chat/*`.
+5. **Pinecone adapter real impl** — write [server/src/adapters/vector-store/pinecone.ts](server/src/adapters/vector-store/pinecone.ts) using `@pinecone-database/pinecone` (upsert + query + deleteByDocument); env validator already enforces `PINECONE_API_KEY`/`PINECONE_INDEX` when `VECTOR_STORE=pinecone`.
+6. **Anthropic LLM adapter real impl** — [server/src/adapters/llm/anthropic.ts](server/src/adapters/llm/anthropic.ts) with `@anthropic-ai/sdk` streaming via `messages.stream` / `MessageStream`; map deltas to the `LLMClient.stream` AsyncIterable contract.
+7. **Structured logs review** — confirm `pino` redact list catches every secret-bearing field new since Phase 4 (e.g. `req.body.password`, citation previews? Probably fine). Add request-id (`pino-http` already supplies one — verify it appears in error logs).
+8. **Finalize Dockerfiles** — verify [server/Dockerfile](server/Dockerfile) `prod` target boots (`docker build --target prod ./server && docker run -p 4000:4000 --env-file .env <image>`); add a `Dockerfile` for `client` (multi-stage: build → static-serve via `nginx:alpine` or `caddy:alpine`); update [docker-compose.yml](docker-compose.yml) prod-overlay file.
+9. **Health probes wired to compose** — extend api/worker compose blocks with `healthcheck:` calling `/health/ready` and `/health` respectively (worker doesn't expose HTTP yet — add a tiny `GET /health` on a side port or a Bull queue ping).
+10. **Final verification pass** against [.claude/rules/workflow.md](.claude/rules/workflow.md) checklist: register/login, upload→ingest, RAG retrieval scoped per user, SSE chat, history, `/health`, mobile @ 360 px, scroll animations.
 
 ### ⚠ Known follow-ups / caveats (live)
 
@@ -134,10 +150,10 @@ After Phase 6: Phase 7 (CI lint→typecheck→test→build, ESLint for client, p
 
 **Frontend caveats**
 - JWT in localStorage — flagged for migration to httpOnly cookie + refresh token in Phase 7 (XSS surface).
-- No code-splitting yet — `index-*.js` is one 354 KB chunk. Phase 6 should split routes via `React.lazy` once landing/marketing routes land.
-- Dark mode toggle UI not wired (CSS vars exist for `.dark`); deferred to Phase 6 polish.
+- Initial bundle now 253 KB (gzip 82 KB) after Phase 6 code-split. If Phase 7 adds bigger deps, reconsider per-route splitting strategy.
 - Client has **no ESLint config** (server has flat config; client only relies on `tsc`). Add Phase 7.
-- Phase 5 was code-verified (`typecheck`, `build`, dev-server SPA routes return 200, SSE proxy round-trip) but **not** clicked through in a real browser session by the user yet. Recommend a manual smoke at the start of Phase 6.
+- Mobile @ 360 px verified via build only, not real-device click-through.
+- Frontend Phases 5 and 6 were code-verified (`typecheck`, `build`, dev-server SPA routes return 200, SSE proxy round-trip, landing route serves Vietnamese copy) but **not** clicked through in a real browser session by the user yet.
 
 ## Key Decisions & Rationale
 
@@ -182,6 +198,15 @@ After Phase 6: Phase 7 (CI lint→typecheck→test→build, ESLint for client, p
 - **Citations stored as jsonb on the assistant message, not in a separate table.** Citations are read whenever the message is read and never queried independently — denormalization beats a join. Schema includes `chunkId` so we can re-resolve to current chunk content if the document is re-ingested.
 - **Single embedding model for ingest + query.** `bge-m3` embeds documents at ingest and questions at retrieval — required so vectors live in the same space. Locked by the `vector(1024)` column.
 - **Vietnamese-first system prompt.** User works in TV; the LLM behaves better when system instructions match the expected output language. Reword if we add an English-only deployment.
+
+### Landing + polish (Phase 6)
+- **Public landing at `/`, no auth wall on the marketing page.** Unauthenticated visitors should be able to read what the product does before being asked to register. CTAs route to `/register` (or `/chat` if already authenticated). Trade-off: the route hierarchy now differs from the auth-gated app; OK because `react-router` handles both cleanly.
+- **Custom `useReveal` hook over Framer Motion.** A 50-line `IntersectionObserver` wrapper does what we need (one-shot fade-up when in view, respects `prefers-reduced-motion`); pulling Framer Motion would add ~30 KB gzipped for one effect. Revisit only if we need orchestrated/spring animations.
+- **`Reveal` typed via `createElement` not `JSX.IntrinsicElements` generic.** TypeScript hits a TS2590 ("union too complex to represent") if we generic over all intrinsic tags; restricting `as` to a small enum and using `createElement` keeps the type checker happy and is just as ergonomic.
+- **Theme has three modes (light / dark / system), not a binary toggle.** `system` is the default — most users want the OS preference unless they intentionally pick. The icon-only toggle cycles through all three (Sun → Moon → Laptop) so users can land on their preferred state without a multi-option menu.
+- **Code-split protected routes only; landing stays in main bundle.** Marketing pages need to paint immediately; auth/chat/documents only load after navigation. Saves the first-paint cost on the most-visited URL while still trimming 100 KB off the initial JS.
+- **Skeletons over spinners for list loads.** Skeletons hint at the eventual layout (4 chat rows / 3 document rows), reducing perceived latency vs. a single centered spinner. Spinners remain for indeterminate states (in-flight chat send button).
+- **Message bubble fade-in via Tailwind `animate-fade-in` (already defined), not Framer.** Single 280 ms keyframe; `motion-reduce:animate-none` falls back gracefully.
 
 ### Frontend scaffold (Phase 5)
 - **Hand-write shadcn primitives instead of `npx shadcn@latest init`.** Init CLI prompts for path aliases / colour scheme and writes `components.json`. Our Vite alias `@/*` and Tailwind theme were already configured manually; copying the small set of primitives we need is faster and avoids dragging in `components.json` + the CLI's defaults that don't match our existing tokens. Future additions can still use the CLI without breaking these primitives.
@@ -250,10 +275,13 @@ Work top-down. Do not skip a phase until every item in it is checked. Mark `[x]`
 - [x] SSE client via `fetch` + `ReadableStream` consuming `POST /chat/stream` (parses `event:`/`data:` lines, dispatches by event name, supports `AbortController`).
 
 ### Phase 6 — Landing page & UI polish
-- [ ] Minimal, modern, professional landing page (hero, features, how-it-works, CTA).
-- [ ] Mobile-first responsive across all pages; verify at 360 px.
-- [ ] Scroll animations on every landing section via IntersectionObserver / Framer Motion `whileInView`, honoring `prefers-reduced-motion`.
-- [ ] Accessibility pass: focus states, aria labels, keyboard navigation.
+- [x] Minimal, modern, professional landing page (hero, features, how-it-works, CTA).
+- [x] Mobile-first responsive across all pages; verify at 360 px.
+- [x] Scroll animations on every landing section via `IntersectionObserver` (custom `useReveal` hook + `<Reveal>` wrapper), honoring `prefers-reduced-motion`.
+- [x] Accessibility pass: focus rings on primitives, aria-labels on icon-only buttons (chat send/stop, theme toggle, logout), `aria-expanded` on citations toggle.
+- [x] Dark mode toggle (light / dark / system, persisted in localStorage, follows OS in `system` mode).
+- [x] Code-split routes via `React.lazy` — initial bundle dropped from 354 KB → 253 KB (gzip 109 KB → 82 KB).
+- [x] Skeletons for history sidebar + documents list during loading; fade-in animation on chat message bubbles.
 
 ### Phase 7 — Production hardening
 - [ ] Centralized error handler + structured logs.

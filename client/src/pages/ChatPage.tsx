@@ -204,7 +204,12 @@ export const ChatPage = () => {
 const MessageBubble = ({ message }: { message: UiMessage }) => {
   const isUser = message.role === 'user';
   return (
-    <div className={cn('flex flex-col gap-1', isUser ? 'items-end' : 'items-start')}>
+    <div
+      className={cn(
+        'flex animate-fade-in flex-col gap-1 motion-reduce:animate-none',
+        isUser ? 'items-end' : 'items-start',
+      )}
+    >
       <div
         className={cn(
           'max-w-[85%] whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm shadow-sm',
@@ -229,7 +234,8 @@ const CitationsList = ({ citations }: { citations: Citation[] }) => {
     <div className="max-w-[85%]">
       <button
         type="button"
-        className="text-xs text-muted-foreground hover:text-foreground"
+        aria-expanded={open}
+        className="rounded-sm text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
         onClick={() => setOpen((o) => !o)}
       >
         {open ? 'Ẩn nguồn' : `Xem ${citations.length} nguồn`}

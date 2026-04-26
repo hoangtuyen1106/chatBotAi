@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Plus, MessageSquare, Loader2 } from 'lucide-react';
+import { Plus, MessageSquare } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Skeleton } from '@/components/ui/skeleton';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
@@ -47,8 +48,10 @@ export const HistorySidebar = ({ refreshKey }: { refreshKey: number }) => {
       </div>
       <ScrollArea className="flex-1">
         {loading ? (
-          <div className="flex items-center gap-2 p-3 text-xs text-muted-foreground">
-            <Loader2 className="h-3 w-3 animate-spin" /> Đang tải…
+          <div className="space-y-1 p-2" aria-label="Đang tải lịch sử">
+            {[0, 1, 2, 3].map((i) => (
+              <Skeleton key={i} className="h-10 w-full" />
+            ))}
           </div>
         ) : chats.length === 0 ? (
           <p className="p-3 text-xs text-muted-foreground">Chưa có cuộc trò chuyện nào.</p>

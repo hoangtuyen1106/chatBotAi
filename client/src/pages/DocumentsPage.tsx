@@ -4,6 +4,7 @@ import { Loader2, Upload, FileText, AlertCircle, CheckCircle2 } from 'lucide-rea
 import { AppShell } from '@/components/AppShell';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Skeleton } from '@/components/ui/skeleton';
 import { api, apiFetch, ApiError, getToken } from '@/lib/api';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
@@ -159,8 +160,10 @@ export const DocumentsPage = () => {
 
         <ScrollArea className="-mx-4 flex-1 px-4 sm:mx-0 sm:px-0">
           {loading ? (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" /> Đang tải…
+            <div className="space-y-2" aria-label="Đang tải tài liệu">
+              {[0, 1, 2].map((i) => (
+                <Skeleton key={i} className="h-14 w-full" />
+              ))}
             </div>
           ) : docs.length === 0 ? (
             <div className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">

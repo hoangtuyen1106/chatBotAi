@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { LogOut, MessageSquare, FileText } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
+import { ThemeToggle } from '@/components/ThemeToggle';
 import { useAuth } from '@/lib/auth';
 import { cn } from '@/lib/utils';
 
@@ -37,8 +38,9 @@ export const AppShell = ({ sidebar, children }: { sidebar?: ReactNode; children:
             ))}
           </nav>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1 sm:gap-2">
           <span className="hidden text-xs text-muted-foreground sm:inline">{user?.email}</span>
+          <ThemeToggle />
           <Button variant="ghost" size="icon" aria-label="Đăng xuất" onClick={logout}>
             <LogOut className="h-4 w-4" />
           </Button>
