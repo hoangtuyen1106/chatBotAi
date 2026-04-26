@@ -8,7 +8,13 @@ AI Chat Bot website with document-grounded RAG. Users can register, upload docum
 
 **Status:** Phases 0–5 complete. Backend (auth + upload + ingest + RAG chat SSE) and frontend (Vite + React + TS + Tailwind + shadcn/ui app shell with chat / documents / auth pages) all verified end-to-end against local Ollama (`qwen2.5:14b` chat, `bge-m3` embeddings). Phase 6 (landing + scroll animations + UI polish) is next.
 
-## Current Status (updated 2026-04-25)
+## Current Status (updated 2026-04-25, end of Phase 5 session)
+
+Two commits on `main`:
+- `c00af83` — Phases 0–4 (backend scaffold + auth + ingestion + RAG chat)
+- `2fdb4cd` — Phase 5 (Vite + React + Tailwind + shadcn/ui frontend)
+
+### ✅ Completed (chronological per phase)
 
 ### Phase 2 (Auth) — done
 - node-pg-migrate wired, [server/src/db/migrate.ts](server/src/db/migrate.ts) replaces the no-op; first migration creates `users` with `citext` email + `pgcrypto` UUIDs.
@@ -16,7 +22,27 @@ AI Chat Bot website with document-grounded RAG. Users can register, upload docum
 - [server/src/services/auth.ts](server/src/services/auth.ts) — register/login (zod, bcrypt cost 12, JWT). Includes a constant-time dummy hash on login miss to avoid email-enumeration timing leak.
 - [server/src/routes/auth.ts](server/src/routes/auth.ts) — `POST /auth/register`, `POST /auth/login`; `express-rate-limit` mounted on the router.
 - [server/src/middleware/requireAuth.ts](server/src/middleware/requireAuth.ts) — Bearer JWT → `req.userId`.
-- Verified: register/dup/login/wrong-pw/short-pw/unknown-field/citext-case-insensitive all return correct status; `/health/ready` reports postgres ok.
+- Verified: register / dup / login / wrong-pw / short-pw / unknown-field / citext-case-insensitive all return correct status; `/health/ready` reports postgres ok.
+
+### Phase 3 (Upload + ingestion) — done
+- Migration [server/migrations/1714000010000_create-documents-and-chunks.cjs](server/migrations/1714000010000_create-documents-and-chunks.cjs) creates `documents`, `document_chunks(embedding vector(1024))`, HNSW cosine index, `document_status` enum, vector + pgcrypto extensions.
+- Adapters: [server/src/adapters/object-storage/s3.ts](server/src/adapters/object-storage/s3.ts) (AWS SDK v3, MinIO-compatible via path-style + endpoint), [server/src/adapters/embeddings/openai-compat.ts](server/src/adapters/embeddings/openai-compat.ts) (OpenAI SDK + `OPENAI_BASE_URL` → Ollama), [server/src/adapters/vector-store/pgvector.ts](server/src/adapters/vector-store/pgvector.ts) (real) + [pinecone.ts](server/src/adapters/vector-store/pinecone.ts) (stub).
+- Parsers registry [server/src/services/ingestion/parsers/](server/src/services/ingestion/parsers/) — pdf/docx/csv/txt; pdf imports `pdf-parse/lib/pdf-parse.js` to bypass that package's debug-block side-effect on import.
+- Chunker [server/src/services/ingestion/chunker.ts](server/src/services/ingestion/chunker.ts) — paragraph-then-window splitter, target 2000 chars / ~570 tokens / 200-char overlap, merges trailing tiny chunks.
+- Bull queue [server/src/services/queue.ts](server/src/services/queue.ts) (Redis), worker [server/src/workers/index.ts](server/src/workers/index.ts) processes `ingest-document` jobs with concurrency 2 and 3 attempts + exponential backoff.
+- Routes: `POST /upload` (multer memory + magic-byte sniff via `file-type` + MIME allowlist + size cap from env) and `GET /documents` (per-user, ordered desc); both wrapped in `requireAuth`.
+- Verified end-to-end: upload sample.txt → S3 (MinIO) → enqueue → parse → 1 chunk → embed via Ollama bge-m3 (~3 s) → vector(1024) upsert with HNSW index → status `ready`. Cross-user isolation OK (`bob` sees empty list). MIME allowlist rejects `application/x-msdownload`.
+
+### Phase 4 (RAG chat) — done
+- Migration [server/migrations/1714000020000_create-chats-and-messages.cjs](server/migrations/1714000020000_create-chats-and-messages.cjs) — `chats(id, user_id, title, created_at, updated_at)` + `messages(id, chat_id, user_id, role enum, content, citations jsonb, truncated bool, created_at)` with `(chat_id, created_at)` and `(user_id, updated_at)` indexes.
+- LLM adapter [server/src/adapters/llm/](server/src/adapters/llm/) — `LLMClient.stream(opts) -> AsyncIterable<string>` interface; OpenAI-compat impl reuses `OPENAI_BASE_URL` so Ollama `qwen2.5:14b` works without a code change; Anthropic is a throwing stub.
+- Retrieval helper [server/src/services/retrieval.ts](server/src/services/retrieval.ts) embeds the question once via `bge-m3`, runs `getVectorStore().query({ userId, embedding, topK: 6, documentId? })`, returns chunks + citation previews (240-char trim).
+- Prompt builder [server/src/services/chat/prompt.ts](server/src/services/chat/prompt.ts) — Vietnamese system prompt with `[#n]` citation contract, numbered chunk block, then chat history + question.
+- Persistence [server/src/services/chat/persistence.ts](server/src/services/chat/persistence.ts) — `ensureChat`, `recentMessages` (Redis read-through, PG source of truth), `saveExchange` (transactional insert of user + assistant messages + chat updated_at + Redis cache append). Redis client at [server/src/db/redis.ts](server/src/db/redis.ts).
+- Orchestrator [server/src/services/chat/index.ts](server/src/services/chat/index.ts) — runs retrieval + history in parallel, emits `onStart` (with citations), `onDelta`, `onDone`, `onError`. Honors `AbortSignal`; persists partial-with-`truncated=true` if client disconnects mid-stream.
+- Routes [server/src/routes/chat.ts](server/src/routes/chat.ts) — `POST /chat/stream` (SSE, 15 s heartbeat, abort on client close), `GET /history`, `GET /chats/:id/messages`. All under `requireAuth` + a dedicated `express-rate-limit`.
+- Compression bypass for SSE: [server/src/app.ts](server/src/app.ts) `compression({ filter })` returns false on `/chat/stream` so deltas flush immediately.
+- Verified: alice asks "pgvector dùng để làm gì?" → SSE emits `start` with 1 citation (chunk #0 of sample.txt, score 0.51) → 30+ delta events → assistant replies in Vietnamese with `[#1]` citation tag → `done` event with messageId. `/history` lists 3 chats; `/chats/:id/messages` returns user + assistant rows with `citations` jsonb populated. Cross-user isolation: bob's `/history` empty, bob's query against alice's chatId returns empty messages array, bob's RAG question retrieves 0 citations (alice's chunks invisible).
 
 ### Phase 5 (Frontend scaffold) — done
 - Vite 6 + React 18 + TS strict + project references (`tsconfig.json` + `tsconfig.app.json` + `tsconfig.node.json`); `@/*` path alias; dev proxy `/api/*` → `http://localhost:4000` (avoids CORS in dev).
@@ -30,39 +56,7 @@ AI Chat Bot website with document-grounded RAG. Users can register, upload docum
 - App chrome: [AppShell](client/src/components/AppShell.tsx) (top header desktop, bottom tab bar mobile), [HistorySidebar](client/src/components/HistorySidebar.tsx).
 - Verified: `npm run typecheck` ✅, `npm run build` ✅ (354 KB JS / 18.7 KB CSS gzipped → 108 KB / 4.6 KB), `npm run dev` serves `/login` `/register` `/chat` `/documents` (200), `/api/*` proxy hits backend, login round-trip via proxy returns JWT, `/chat/stream` SSE via proxy emits `start` (1 citation) → `delta` x N for the same Vietnamese question used in Phase 4.
 
-⚠ Known follow-ups
-- JWT in localStorage — flagged for migration to httpOnly cookie + refresh token in Phase 7 (XSS surface).
-- No code-splitting yet — `index-*.js` is one 354 KB chunk. Phase 6/7 can split routes via `React.lazy` once landing/marketing routes land.
-- Dark mode toggle UI not wired (CSS vars exist for `.dark`); deferred to Phase 6 polish.
-- ESLint not set up for client (server has flat config; client just relies on `tsc`). Add Phase 7.
-
-### Phase 4 (RAG chat) — done
-- Migration [server/migrations/1714000020000_create-chats-and-messages.cjs](server/migrations/1714000020000_create-chats-and-messages.cjs) — `chats(id, user_id, title, created_at, updated_at)` + `messages(id, chat_id, user_id, role enum, content, citations jsonb, truncated bool, created_at)` with `(chat_id, created_at)` and `(user_id, updated_at)` indexes.
-- LLM adapter [server/src/adapters/llm/](server/src/adapters/llm/) — `LLMClient.stream(opts) -> AsyncIterable<string>` interface; OpenAI-compat impl reuses `OPENAI_BASE_URL` so Ollama `qwen2.5:14b` works without a code change; Anthropic is a throwing stub.
-- Retrieval helper [server/src/services/retrieval.ts](server/src/services/retrieval.ts) embeds the question once via `bge-m3`, runs `getVectorStore().query({ userId, embedding, topK: 6, documentId? })`, returns chunks + citation previews (240-char trim).
-- Prompt builder [server/src/services/chat/prompt.ts](server/src/services/chat/prompt.ts) — Vietnamese system prompt with `[#n]` citation contract, numbered chunk block, then chat history + question.
-- Persistence [server/src/services/chat/persistence.ts](server/src/services/chat/persistence.ts) — `ensureChat`, `recentMessages` (Redis read-through, PG source of truth), `saveExchange` (transactional insert of user + assistant messages + chat updated_at + Redis cache append). Redis client at [server/src/db/redis.ts](server/src/db/redis.ts).
-- Orchestrator [server/src/services/chat/index.ts](server/src/services/chat/index.ts) — runs retrieval + history in parallel, emits `onStart` (with citations), `onDelta`, `onDone`, `onError`. Honors `AbortSignal`; persists partial-with-`truncated=true` if client disconnects mid-stream.
-- Routes [server/src/routes/chat.ts](server/src/routes/chat.ts) — `POST /chat/stream` (SSE, 15 s heartbeat, abort on client close), `GET /history`, `GET /chats/:id/messages`. All under `requireAuth` + a dedicated `express-rate-limit`.
-- Compression bypass for SSE: [server/src/app.ts](server/src/app.ts) `compression({ filter })` returns false on `/chat/stream` so deltas flush immediately.
-- Verified: alice asks "pgvector dùng để làm gì?" → SSE emits `start` with 1 citation (chunk #0 of sample.txt, score 0.51) → 30+ delta events → assistant replies in Vietnamese with `[#1]` citation tag → `done` event with messageId. `/history` lists 3 chats; `/chats/:id/messages` returns user + assistant rows with `citations` jsonb populated. Cross-user isolation: bob's `/history` empty, bob's query against alice's chatId returns empty messages array, bob's RAG question retrieves 0 citations (alice's chunks invisible).
-
-### Phase 3 (Upload + ingestion) — done
-- Migration [server/migrations/1714000010000_create-documents-and-chunks.cjs](server/migrations/1714000010000_create-documents-and-chunks.cjs) creates `documents`, `document_chunks(embedding vector(1024))`, HNSW cosine index, `document_status` enum, vector + pgcrypto extensions.
-- Adapters: [server/src/adapters/object-storage/s3.ts](server/src/adapters/object-storage/s3.ts) (AWS SDK v3, MinIO-compatible via path-style + endpoint), [server/src/adapters/embeddings/openai-compat.ts](server/src/adapters/embeddings/openai-compat.ts) (OpenAI SDK + `OPENAI_BASE_URL` → Ollama), [server/src/adapters/vector-store/pgvector.ts](server/src/adapters/vector-store/pgvector.ts) (real) + [pinecone.ts](server/src/adapters/vector-store/pinecone.ts) (stub).
-- Parsers registry [server/src/services/ingestion/parsers/](server/src/services/ingestion/parsers/) — pdf/docx/csv/txt; pdf imports `pdf-parse/lib/pdf-parse.js` to bypass that package's debug-block side-effect on import.
-- Chunker [server/src/services/ingestion/chunker.ts](server/src/services/ingestion/chunker.ts) — paragraph-then-window splitter, target 2000 chars / ~570 tokens / 200-char overlap, merges trailing tiny chunks.
-- Bull queue [server/src/services/queue.ts](server/src/services/queue.ts) (Redis), worker [server/src/workers/index.ts](server/src/workers/index.ts) processes `ingest-document` jobs with concurrency 2 and 3 attempts + exponential backoff.
-- Routes: `POST /upload` (multer memory + magic-byte sniff via `file-type` + MIME allowlist + size cap from env) and `GET /documents` (per-user, ordered desc); both wrapped in `requireAuth`.
-- Verified end-to-end: upload sample.txt → S3 (MinIO) → enqueue → parse → 1 chunk → embed via Ollama bge-m3 (~3 s) → vector(1024) upsert with HNSW index → status `ready`. Cross-user isolation OK (`bob` sees empty list). MIME allowlist rejects `application/x-msdownload`.
-
-⚠ Known follow-ups
-- Pinecone adapter is a stub — implement before allowing `VECTOR_STORE=pinecone`.
-- Worker has no per-document concurrency cap — large bursts of uploads from one user could starve others. Add a fairness scheme in Phase 7.
-- Chunker is char-window-based (estimateTokens = chars/3.5). Switch to a real tokenizer if chunk sizes need to be precise per LLM context budget.
-- `pdf-parse` is on v1 (v2 changed entry shape); revisit if v2 stabilizes.
-
-### ✅ Completed
+### ✅ Earlier scaffold
 
 **Phase 0 — Repo bootstrap**
 - Git repo on `main`; root [.gitignore](.gitignore), [README.md](README.md), [CLAUDE.md](CLAUDE.md).
@@ -121,18 +115,29 @@ AI Chat Bot website with document-grounded RAG. Users can register, upload docum
 After Phase 6: Phase 7 (CI lint→typecheck→test→build, ESLint for client, prod-grade JWT cookie+refresh, finalize Dockerfiles, rate-limits on every public endpoint, structured logs review).
 
 ### ⚠ Known follow-ups / caveats (live)
+
+**Operational gotchas**
 - Root `.env` is **not** committed (by design). Copy [.env.example](.env.example) → `.env` before `docker compose up` or local `npm run dev`; zod loader fails fast otherwise.
-- Root [package.json](package.json) exists for Husky/lint-staged — run `npm install` at repo root once so `npm run prepare` activates hooks. **Do not install runtime deps at the root** — they belong in [server/package.json](server/package.json) (we hit this once during Phase 3 install and had to clean up).
+- Root [package.json](package.json) exists for Husky/lint-staged — run `npm install` at repo root once so `npm run prepare` activates hooks. **Do not install runtime deps at the root** — they belong in [server/package.json](server/package.json) or [client/package.json](client/package.json). (We hit this twice during Phase 3 and Phase 5 setup.)
 - `docker-compose.yml` `api` + `worker` services bind-mount `./server:/app` with an anonymous `/app/node_modules` volume. **After changing `server/package.json`** the recipe is: `docker compose build api worker && docker compose stop api worker && docker compose rm -fv api worker && docker compose up -d api worker`. Just `down/up` keeps the stale anonymous volume and the new deps will be missing.
+- Ollama on host requires manual restart if it dies (e.g. after Docker Desktop bounce on Windows). The chat endpoint surfaces `Connection error.` if Ollama is down — start it with `ollama serve` in a hidden process or run as a Windows service. ChatPage will also surface this as an SSE `error` event.
+- `qwen2.5:14b` Q4 needs ~9 GB VRAM. On a 12 GB GPU with other apps consuming ~4 GB, allocation fails with "unable to allocate CUDA0 buffer". Restart Ollama to free GPU memory, or pull a smaller chat model (`qwen2.5:7b` ~5 GB) and switch `OPENAI_CHAT_MODEL` in `.env`.
+
+**Backend caveats**
 - Pinecone adapter at [server/src/adapters/vector-store/pinecone.ts](server/src/adapters/vector-store/pinecone.ts) throws — implement before allowing `VECTOR_STORE=pinecone`.
 - Anthropic LLM adapter at [server/src/adapters/llm/anthropic.ts](server/src/adapters/llm/anthropic.ts) throws — implement before allowing `LLM_PROVIDER=anthropic`. (User runs entirely on local Ollama via the OpenAI-compat path, so unblocked.)
-- Ollama on host requires manual restart if it dies (e.g. after Docker Desktop bounce on Windows). The chat endpoint surfaces `Connection error.` if Ollama is down — start it with `ollama serve` in a hidden process or run as a Windows service.
-- `qwen2.5:14b` Q4 needs ~9 GB VRAM. On a 12 GB GPU with other apps consuming ~4 GB, allocation fails with "unable to allocate CUDA0 buffer". Restart Ollama to free GPU memory, or pull a smaller chat model (`qwen2.5:7b` ~5 GB) and switch `OPENAI_CHAT_MODEL` in `.env`.
 - SSE compression is bypassed by path filter on `/chat/stream`. If we add more streaming endpoints, extend the filter — otherwise tokens batch and break the live-typing UX.
 - Worker has no per-user fairness — large bursts from one user can monopolize the queue. Revisit in Phase 7 if needed.
 - Chunker is char-window-based (estimateTokens = chars/3.5). Switch to a real tokenizer if precise context budgeting matters for the chat endpoint.
 - `pdf-parse` pinned to v1; v2 changed entry shape and removes the `lib/pdf-parse.js` workaround we depend on.
 - `OPENAI_API_KEY=ollama` in `.env` is a placeholder string the OpenAI SDK requires; not an actual credential. Production must change `JWT_SECRET` and either set a real `OPENAI_API_KEY` (cloud) or keep the Ollama base URL.
+
+**Frontend caveats**
+- JWT in localStorage — flagged for migration to httpOnly cookie + refresh token in Phase 7 (XSS surface).
+- No code-splitting yet — `index-*.js` is one 354 KB chunk. Phase 6 should split routes via `React.lazy` once landing/marketing routes land.
+- Dark mode toggle UI not wired (CSS vars exist for `.dark`); deferred to Phase 6 polish.
+- Client has **no ESLint config** (server has flat config; client only relies on `tsc`). Add Phase 7.
+- Phase 5 was code-verified (`typecheck`, `build`, dev-server SPA routes return 200, SSE proxy round-trip) but **not** clicked through in a real browser session by the user yet. Recommend a manual smoke at the start of Phase 6.
 
 ## Key Decisions & Rationale
 
@@ -157,15 +162,15 @@ After Phase 6: Phase 7 (CI lint→typecheck→test→build, ESLint for client, p
 - **Constant-time dummy hash on login miss.** [auth.ts](server/src/services/auth.ts) compares against a fixed bcrypt hash when the email isn't found, so timing doesn't leak which emails exist. Uses ~same CPU as a real bcrypt compare.
 - **JWT in Authorization header (Bearer), not cookies.** Phase 2 is API-only; cookie + CSRF complexity is unwarranted until Phase 5 introduces a browser SPA. Revisit cookie strategy when wiring the frontend.
 
-### Frontend scaffold (Phase 5)
-- **Hand-write shadcn primitives instead of `npx shadcn@latest init`.** Init CLI prompts for path aliases / colour scheme and writes `components.json`. Our Vite alias `@/*` and Tailwind theme were already configured manually; copying the small set of primitives we need is faster and avoids dragging in `components.json` + the CLI's defaults that don't match our existing tokens. Future additions can still use the CLI without breaking these primitives.
-- **JWT in localStorage (Phase 5 v1).** Avoids httpOnly-cookie + CSRF + refresh-token complexity for an internal dev app. Trade-off: any XSS executes with the user's bearer. Migration to httpOnly cookies + short-lived access + refresh token logged as Phase 7 follow-up.
-- **Vite dev proxy `/api/*` → `localhost:4000`.** Frontend always calls relative `/api/...` so production deploy can swap origins without code changes. Avoids CORS round-trips during local dev (browser sees same-origin from `localhost:5173`).
-- **SSE consumed via `fetch` + `ReadableStream` (not native `EventSource`).** Native `EventSource` only supports GET; our `POST /chat/stream` carries the message in the body. fetch's `ReadableStream` works with POST and handles abort cleanly via `AbortController`.
-- **Imperative toast store, not React context per-toast.** A tiny module-level subscriber list ([lib/toast.ts](client/src/lib/toast.ts)) lets non-React code (api error handler, stream callbacks) call `toast({ ... })` directly, no `useToast()` hook needed at the call site.
-- **JWT decoded on the client to populate `user.email` without a `/me` round trip.** Token signature isn't verified client-side — the server still verifies on every request. We use the payload only for display.
-- **Sticky-to-bottom auto-scroll with a "scrolled-up" guard.** Standard chat UX: user scrolling up to read history must NOT be yanked back when new tokens stream. We track distance-from-bottom < 80 px to decide whether to auto-scroll.
-- **Message bubble accumulates `delta`s in React state directly.** No virtual list needed at chat-history scale (≤ 200 messages); `whitespace-pre-wrap` handles long content. Revisit if a single chat exceeds 1000 messages.
+### Upload + ingestion (Phase 3)
+- **HNSW index with cosine ops, dim=1024.** HNSW is the right default for read-heavy similarity search at our scale; cosine matches what `bge-m3` is optimized for. Locking dim=1024 in the migration means changing embedding model later requires a migration + re-embed.
+- **Magic-byte sniff (`file-type`) on top of MIME allowlist.** Client-supplied `Content-Type` is trivially spoofed; sniffing the buffer prevents an executable from being uploaded as `text/plain`. Falls back to the multer-reported MIME *only* for `text/plain` and `text/csv` (which `file-type` can't always detect because plain text has no magic bytes).
+- **Storage key `users/{userId}/{uuid}{ext}`, not original filename.** Original filename kept in `documents.filename` as metadata only. Prevents path traversal and filename-collision attacks, makes per-user cleanup trivial (`rm users/{userId}/*`).
+- **`document_chunks.user_id` denormalized.** Avoids a join on every vector search and lets the WHERE clause filter on a single indexed column. Worth the duplication for security-critical scoping.
+- **Char-window chunker, not token-aware.** Initial implementation; a real tokenizer adds a heavy dep (tiktoken/js-tiktoken WASM) and chunk-size precision doesn't change retrieval quality much. Will revisit if Phase 4 chat shows context-budget issues.
+- **Bull (Redis-backed) over BullMQ.** Existing dep was `bull`; both work. Bull's API is sufficient for our parse-chunk-embed flow. Migrate to BullMQ only if we need flow producers/streams.
+- **Pinecone adapter shipped as a throwing stub.** User runs entirely local; pulling the Pinecone SDK and writing real upsert/query for a code path nobody will exercise is dead weight. The factory + interface are real, so swapping in is a focused task.
+- **`pdf-parse` v1 with `lib/pdf-parse.js` inner-path import.** v1's main entry has a debug block that opens a sample PDF on `require`, breaking when the package is loaded for production use. The inner path bypasses it. v2 changed the API and removed the workaround — revisit when v2 is stable.
 
 ### RAG chat (Phase 4)
 - **SSE over WebSocket.** Chat is a one-way stream of tokens; SSE works through Express middleware unchanged, doesn't need a separate upgrade handshake, and reconnects via standard HTTP. WebSocket only buys us bidirectional events we don't need yet (typing indicators from server, multi-user rooms). Revisit if those land.
@@ -178,15 +183,15 @@ After Phase 6: Phase 7 (CI lint→typecheck→test→build, ESLint for client, p
 - **Single embedding model for ingest + query.** `bge-m3` embeds documents at ingest and questions at retrieval — required so vectors live in the same space. Locked by the `vector(1024)` column.
 - **Vietnamese-first system prompt.** User works in TV; the LLM behaves better when system instructions match the expected output language. Reword if we add an English-only deployment.
 
-### Upload + ingestion (Phase 3)
-- **HNSW index with cosine ops, dim=1024.** HNSW is the right default for read-heavy similarity search at our scale; cosine matches what `bge-m3` is optimized for. Locking dim=1024 in the migration means changing embedding model later requires a migration + re-embed.
-- **Magic-byte sniff (`file-type`) on top of MIME allowlist.** Client-supplied `Content-Type` is trivially spoofed; sniffing the buffer prevents an executable from being uploaded as `text/plain`. Falls back to the multer-reported MIME *only* for `text/plain` and `text/csv` (which `file-type` can't always detect because plain text has no magic bytes).
-- **Storage key `users/{userId}/{uuid}{ext}`, not original filename.** Original filename kept in `documents.filename` as metadata only. Prevents path traversal and filename-collision attacks, makes per-user cleanup trivial (`rm users/{userId}/*`).
-- **`document_chunks.user_id` denormalized.** Avoids a join on every vector search and lets the WHERE clause filter on a single indexed column. Worth the duplication for security-critical scoping.
-- **Char-window chunker, not token-aware.** Initial implementation; a real tokenizer adds a heavy dep (tiktoken/js-tiktoken WASM) and chunk-size precision doesn't change retrieval quality much. Will revisit if Phase 4 chat shows context-budget issues.
-- **Bull (Redis-backed) over BullMQ.** Existing dep was `bull`; both work. Bull's API is sufficient for our parse-chunk-embed flow. Migrate to BullMQ only if we need flow producers/streams.
-- **Pinecone adapter shipped as a throwing stub.** User runs entirely local; pulling the Pinecone SDK and writing real upsert/query for a code path nobody will exercise is dead weight. The factory + interface are real, so swapping in is a focused task.
-- **`pdf-parse` v1 with `lib/pdf-parse.js` inner-path import.** v1's main entry has a debug block that opens a sample PDF on `require`, breaking when the package is loaded for production use. The inner path bypasses it. v2 changed the API and removed the workaround — revisit when v2 is stable.
+### Frontend scaffold (Phase 5)
+- **Hand-write shadcn primitives instead of `npx shadcn@latest init`.** Init CLI prompts for path aliases / colour scheme and writes `components.json`. Our Vite alias `@/*` and Tailwind theme were already configured manually; copying the small set of primitives we need is faster and avoids dragging in `components.json` + the CLI's defaults that don't match our existing tokens. Future additions can still use the CLI without breaking these primitives.
+- **JWT in localStorage (Phase 5 v1).** Avoids httpOnly-cookie + CSRF + refresh-token complexity for an internal dev app. Trade-off: any XSS executes with the user's bearer. Migration to httpOnly cookies + short-lived access + refresh token logged as Phase 7 follow-up.
+- **Vite dev proxy `/api/*` → `localhost:4000`.** Frontend always calls relative `/api/...` so production deploy can swap origins without code changes. Avoids CORS round-trips during local dev (browser sees same-origin from `localhost:5173`).
+- **SSE consumed via `fetch` + `ReadableStream` (not native `EventSource`).** Native `EventSource` only supports GET; our `POST /chat/stream` carries the message in the body. fetch's `ReadableStream` works with POST and handles abort cleanly via `AbortController`.
+- **Imperative toast store, not React context per-toast.** A tiny module-level subscriber list ([lib/toast.ts](client/src/lib/toast.ts)) lets non-React code (api error handler, stream callbacks) call `toast({ ... })` directly, no `useToast()` hook needed at the call site.
+- **JWT decoded on the client to populate `user.email` without a `/me` round trip.** Token signature isn't verified client-side — the server still verifies on every request. We use the payload only for display.
+- **Sticky-to-bottom auto-scroll with a "scrolled-up" guard.** Standard chat UX: user scrolling up to read history must NOT be yanked back when new tokens stream. We track distance-from-bottom < 80 px to decide whether to auto-scroll.
+- **Message bubble accumulates `delta`s in React state directly.** No virtual list needed at chat-history scale (≤ 200 messages); `whitespace-pre-wrap` handles long content. Revisit if a single chat exceeds 1000 messages.
 
 ## Build Plan (Checklist)
 
