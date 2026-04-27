@@ -58,9 +58,9 @@ const steps = [
 ];
 
 export const LandingPage = () => {
-  const { token } = useAuth();
-  const ctaTo = token ? '/chat' : '/register';
-  const ctaLabel = token ? 'Mở ứng dụng' : 'Bắt đầu miễn phí';
+  const { user } = useAuth();
+  const ctaTo = user ? '/chat' : '/register';
+  const ctaLabel = user ? 'Mở ứng dụng' : 'Bắt đầu miễn phí';
 
   return (
     <div className="min-h-dvh bg-background text-foreground">
@@ -71,7 +71,7 @@ export const LandingPage = () => {
           </Link>
           <div className="flex items-center gap-1 sm:gap-2">
             <ThemeToggle />
-            {token ? (
+            {user ? (
               <Button asChild size="sm">
                 <Link to="/chat">Vào ứng dụng</Link>
               </Button>

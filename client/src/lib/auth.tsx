@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 
-import { api, getToken, setToken, subscribeUnauthorized } from './api';
+import { api, ApiError, subscribeUnauthorized } from './api';
 
 export interface User {
   id: string;
@@ -10,50 +10,52 @@ export interface User {
 
 interface AuthContextValue {
   user: User | null;
-  token: string | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
 }
 
 const AuthContext = React.createContext<AuthContextValue | null>(null);
 
 interface AuthResponse {
-  token: string;
   user: User;
 }
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [token, setTok] = React.useState<string | null>(() => getToken());
   const [user, setUser] = React.useState<User | null>(null);
-  const [loading] = React.useState(false);
+  const [loading, setLoading] = React.useState(true);
 
   React.useEffect(() => {
     return subscribeUnauthorized(() => {
-      setTok(null);
       setUser(null);
     });
   }, []);
 
   React.useEffect(() => {
-    if (token && !user) {
+    let cancelled = false;
+    void (async () => {
       try {
-        const payload = JSON.parse(atob(token.split('.')[1] ?? '')) as { sub?: string; email?: string };
-        if (payload.sub) setUser({ id: payload.sub, email: payload.email ?? '' });
-      } catch {
-        /* malformed token */
+        const res = await api<AuthResponse>('/auth/me');
+        if (!cancelled) setUser(res.user);
+      } catch (err) {
+        if (!cancelled && !(err instanceof ApiError && err.status === 401)) {
+          console.error('auth_me_failed', err);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-    }
-  }, [token, user]);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const login = React.useCallback(async (email: string, password: string) => {
     const res = await api<AuthResponse>('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     });
-    setToken(res.token);
-    setTok(res.token);
     setUser(res.user);
   }, []);
 
@@ -62,20 +64,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       method: 'POST',
       body: JSON.stringify({ email, password }),
     });
-    setToken(res.token);
-    setTok(res.token);
     setUser(res.user);
   }, []);
 
-  const logout = React.useCallback(() => {
-    setToken(null);
-    setTok(null);
+  const logout = React.useCallback(async () => {
+    try {
+      await api('/auth/logout', { method: 'POST' });
+    } catch {
+      /* server-side cleanup best-effort */
+    }
     setUser(null);
   }, []);
 
   const value = React.useMemo<AuthContextValue>(
-    () => ({ user, token, loading, login, register, logout }),
-    [user, token, loading, login, register, logout],
+    () => ({ user, loading, login, register, logout }),
+    [user, loading, login, register, logout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
@@ -88,8 +91,9 @@ export const useAuth = (): AuthContextValue => {
 };
 
 export const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { token } = useAuth();
+  const { user, loading } = useAuth();
   const location = useLocation();
-  if (!token) return <Navigate to="/login" state={{ from: location }} replace />;
+  if (loading) return null;
+  if (!user) return <Navigate to="/login" state={{ from: location }} replace />;
   return <>{children}</>;
 };

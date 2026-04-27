@@ -1,21 +1,5 @@
-const STORAGE_KEY = 'chatbot.token';
-
-export const getToken = (): string | null => {
-  try {
-    return localStorage.getItem(STORAGE_KEY);
-  } catch {
-    return null;
-  }
-};
-
-export const setToken = (token: string | null): void => {
-  try {
-    if (token) localStorage.setItem(STORAGE_KEY, token);
-    else localStorage.removeItem(STORAGE_KEY);
-  } catch {
-    /* ignore */
-  }
-};
+const CSRF_COOKIE = 'csrf_token';
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 export class ApiError extends Error {
   status: number;
@@ -33,14 +17,13 @@ export const subscribeUnauthorized = (cb: () => void): (() => void) => {
   return () => onUnauthorized.delete(cb);
 };
 
-const buildHeaders = (init?: RequestInit): Headers => {
-  const h = new Headers(init?.headers);
-  const token = getToken();
-  if (token) h.set('Authorization', `Bearer ${token}`);
-  if (init?.body && !(init.body instanceof FormData) && !h.has('Content-Type')) {
-    h.set('Content-Type', 'application/json');
+const readCookie = (name: string): string | null => {
+  const all = document.cookie.split(';');
+  for (const part of all) {
+    const [k, ...v] = part.trim().split('=');
+    if (k === name) return decodeURIComponent(v.join('='));
   }
-  return h;
+  return null;
 };
 
 export const apiUrl = (path: string): string => {
@@ -48,11 +31,52 @@ export const apiUrl = (path: string): string => {
   return `${base}${path.startsWith('/') ? path : `/${path}`}`;
 };
 
+const buildHeaders = (init?: RequestInit): Headers => {
+  const h = new Headers(init?.headers);
+  if (init?.body && !(init.body instanceof FormData) && !h.has('Content-Type')) {
+    h.set('Content-Type', 'application/json');
+  }
+  const method = (init?.method ?? 'GET').toUpperCase();
+  if (!SAFE_METHODS.has(method)) {
+    const csrf = readCookie(CSRF_COOKIE);
+    if (csrf) h.set('X-CSRF-Token', csrf);
+  }
+  return h;
+};
+
+const doFetch = (path: string, init?: RequestInit): Promise<Response> =>
+  fetch(apiUrl(path), { ...init, credentials: 'include', headers: buildHeaders(init) });
+
+let refreshInFlight: Promise<boolean> | null = null;
+
+const tryRefresh = async (): Promise<boolean> => {
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = (async () => {
+    try {
+      const res = await doFetch('/auth/refresh', { method: 'POST' });
+      return res.ok;
+    } catch {
+      return false;
+    } finally {
+      // Hold the same promise long enough to dedupe concurrent callers,
+      // but always reset before returning so the next 401 retries fresh.
+      setTimeout(() => {
+        refreshInFlight = null;
+      }, 0);
+    }
+  })();
+  return refreshInFlight;
+};
+
 export const apiFetch = async (path: string, init?: RequestInit): Promise<Response> => {
-  const res = await fetch(apiUrl(path), { ...init, headers: buildHeaders(init) });
-  if (res.status === 401) {
-    setToken(null);
-    for (const cb of onUnauthorized) cb();
+  let res = await doFetch(path, init);
+  if (res.status === 401 && path !== '/auth/refresh' && path !== '/auth/login') {
+    const refreshed = await tryRefresh();
+    if (refreshed) {
+      res = await doFetch(path, init);
+    } else {
+      for (const cb of onUnauthorized) cb();
+    }
   }
   return res;
 };

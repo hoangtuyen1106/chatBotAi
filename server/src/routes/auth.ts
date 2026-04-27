@@ -3,8 +3,20 @@ import rateLimit from 'express-rate-limit';
 import { ZodError } from 'zod';
 
 import { env } from '../config/env.js';
-import { credentialsSchema, login, register, type Credentials } from '../services/auth.js';
+import {
+  clearSession,
+  cookieNames,
+  credentialsSchema,
+  getUserById,
+  issueSession,
+  login,
+  register,
+  revokeRefreshToken,
+  rotateRefreshToken,
+  type Credentials,
+} from '../services/auth.js';
 import { HttpError } from '../middleware/errorHandler.js';
+import { requireAuth } from '../middleware/requireAuth.js';
 
 export const authRouter = Router();
 
@@ -34,8 +46,9 @@ const validate: RequestHandler = (req, _res, next) => {
 
 authRouter.post('/auth/register', validate, async (req, res, next) => {
   try {
-    const result = await register(req.body as Credentials);
-    res.status(201).json(result);
+    const user = await register(req.body as Credentials);
+    await issueSession(res, user);
+    res.status(201).json({ user });
   } catch (err) {
     next(err);
   }
@@ -43,8 +56,45 @@ authRouter.post('/auth/register', validate, async (req, res, next) => {
 
 authRouter.post('/auth/login', validate, async (req, res, next) => {
   try {
-    const result = await login(req.body as Credentials);
-    res.status(200).json(result);
+    const user = await login(req.body as Credentials);
+    await issueSession(res, user);
+    res.status(200).json({ user });
+  } catch (err) {
+    next(err);
+  }
+});
+
+authRouter.post('/auth/refresh', async (req, res, next) => {
+  try {
+    const cookies = req.cookies as Record<string, string | undefined> | undefined;
+    const raw = cookies?.[cookieNames.refresh];
+    if (!raw) throw new HttpError(401, 'Missing refresh token', 'unauthorized');
+    const user = await rotateRefreshToken(raw);
+    await issueSession(res, user);
+    res.status(200).json({ user });
+  } catch (err) {
+    next(err);
+  }
+});
+
+authRouter.post('/auth/logout', async (req, res, next) => {
+  try {
+    const cookies = req.cookies as Record<string, string | undefined> | undefined;
+    const raw = cookies?.[cookieNames.refresh];
+    if (raw) await revokeRefreshToken(raw);
+    clearSession(res);
+    res.status(204).end();
+  } catch (err) {
+    next(err);
+  }
+});
+
+authRouter.get('/auth/me', requireAuth, async (req, res, next) => {
+  try {
+    if (!req.userId) throw new HttpError(401, 'Unauthorized', 'unauthorized');
+    const user = await getUserById(req.userId);
+    if (!user) throw new HttpError(401, 'Unauthorized', 'unauthorized');
+    res.status(200).json({ user });
   } catch (err) {
     next(err);
   }

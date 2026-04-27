@@ -2,6 +2,7 @@ import express, { type Express, type Request, type Response } from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
 import compression from 'compression';
+import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
 import { pinoHttp } from 'pino-http';
 
@@ -11,6 +12,7 @@ import { healthRouter } from './routes/health.js';
 import { authRouter } from './routes/auth.js';
 import { uploadRouter } from './routes/upload.js';
 import { chatRouter } from './routes/chat.js';
+import { csrfGuard } from './middleware/csrf.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 
 export const createApp = (): Express => {
@@ -51,6 +53,7 @@ export const createApp = (): Express => {
   );
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+  app.use(cookieParser());
 
   // Health endpoints stay un-rate-limited so probes don't get throttled.
   app.use(healthRouter);
@@ -66,6 +69,11 @@ export const createApp = (): Express => {
       message: { error: 'rate_limited', message: 'Too many requests, slow down.' },
     }),
   );
+
+  // CSRF double-submit guard: applies before the routers so every
+  // state-changing request is checked. /auth/register and /auth/login are
+  // exempt inside the middleware (no session cookie yet).
+  app.use(csrfGuard);
 
   app.use(authRouter);
   app.use(uploadRouter);

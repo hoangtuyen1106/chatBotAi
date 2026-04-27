@@ -1,4 +1,13 @@
-import { apiUrl, getToken } from './api';
+import { apiUrl } from './api';
+
+const readCookie = (name: string): string | null => {
+  const all = document.cookie.split(';');
+  for (const part of all) {
+    const [k, ...v] = part.trim().split('=');
+    if (k === name) return decodeURIComponent(v.join('='));
+  }
+  return null;
+};
 
 export interface Citation {
   chunkId: string;
@@ -40,12 +49,13 @@ export const streamChat = async (
   cbs: StreamCallbacks,
   signal?: AbortSignal,
 ): Promise<void> => {
-  const token = getToken();
+  const csrf = readCookie('csrf_token');
   const init: RequestInit = {
     method: 'POST',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
     },
     body: JSON.stringify(body),
   };

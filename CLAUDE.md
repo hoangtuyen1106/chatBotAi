@@ -6,13 +6,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 AI Chat Bot website with document-grounded RAG. Users can register, upload documents (PDF / DOCX / CSV / TXT), and chat with an LLM that answers using their uploaded content as context.
 
-**Status:** Phases 0–7 substantially complete. Backend + frontend + infra hardened: global rate-limit, hardened pino redact, GitHub Actions CI (server + client + Docker prod build), client ESLint flat config, Docker compose health probes, prod Dockerfile verified. Five items deferred to **Phase 8** (JWT cookie migration, Pinecone real, Anthropic real, client Dockerfile, vitest suite). Final real-browser click-through still owed.
+**Status:** Phases 0–8 code-complete. Backend + frontend + infra hardened. Phase 8 closed all five deferred items in one pass: real Pinecone adapter, real Anthropic adapter, vitest suite (11 tests), client Dockerfile + prod-overlay compose, and the JWT cookie migration (httpOnly access + httpOnly refresh + double-submit CSRF + /auth/me + /auth/refresh + /auth/logout). Final real-browser click-through still owed.
 
-## Current Status (updated 2026-04-25, end of Phase 5 session)
+## Current Status (updated 2026-04-27, end of Phase 8 session)
 
-Two commits on `main`:
+Five commits on `main` plus uncommitted Phase 8:
 - `c00af83` — Phases 0–4 (backend scaffold + auth + ingestion + RAG chat)
 - `2fdb4cd` — Phase 5 (Vite + React + Tailwind + shadcn/ui frontend)
+- `482cce6` — Phase 6 (landing page + UI polish)
+- `8e8d9bb` — Phase 7 (production hardening + CI)
+- (uncommitted) — Phase 8 (Pinecone + Anthropic + vitest + client Dockerfile + JWT cookie migration)
 
 ### ✅ Completed (chronological per phase)
 
@@ -95,6 +98,34 @@ Two commits on `main`:
 - Initial render of the lazy chunks shows a centered spinner via `<Suspense fallback>`; could be a route-specific skeleton later.
 - LandingPage uses static copy; no CMS layer.
 
+### Phase 8 (Closing deferred Phase 7 items) — code-complete
+- **JWT cookie migration** — auth no longer returns a token in the JSON body; instead the server sets three cookies on register/login/refresh:
+  - `access_token` — httpOnly, Secure (prod), SameSite=Lax, path=`/`, 15-min JWT (`type:access`).
+  - `refresh_token` — httpOnly, Secure (prod), SameSite=Lax, path=`/auth` (scope-limited so it never ships on `/upload`/`/chat/*`), 7-day random 32-byte hex; SHA-256 hash stored in new `refresh_tokens` table ([server/migrations/1714000030000_create-refresh-tokens.cjs](server/migrations/1714000030000_create-refresh-tokens.cjs)).
+  - `csrf_token` — **not** httpOnly (must be JS-readable for double-submit), Secure (prod), SameSite=Lax, 7-day random hex.
+- **New auth endpoints**: `POST /auth/refresh` (rotates the refresh token in a single transaction — old row marked revoked, new row inserted, new cookies set), `POST /auth/logout` (revokes the refresh token and clears all three cookies, returns 204), `GET /auth/me` (returns the user — used by the client to bootstrap auth on mount instead of decoding a JWT in JS). All under the same `authLimiter` and CSRF guard. See [server/src/routes/auth.ts](server/src/routes/auth.ts).
+- **Auth service** rewritten to expose `issueSession`/`clearSession`/`rotateRefreshToken`/`revokeRefreshToken`/`getUserById` ([server/src/services/auth.ts](server/src/services/auth.ts)). Refresh-token rotation is single-use: old hash is revoked the moment it's redeemed.
+- **CSRF double-submit middleware** [server/src/middleware/csrf.ts](server/src/middleware/csrf.ts): for any non-safe method (anything other than GET/HEAD/OPTIONS), require the `X-CSRF-Token` header to match the `csrf_token` cookie via `timingSafeEqual`. `/auth/register` + `/auth/login` are exempt (no session yet). Mounted globally in [server/src/app.ts](server/src/app.ts) **after** the rate-limiter, **before** the routers.
+- **`requireAuth` rewritten** to read from `req.cookies.access_token` instead of the `Authorization` header; clean break, no Bearer fallback. Cookie parsing via `cookie-parser` middleware mounted alongside `express.json` ([server/src/app.ts](server/src/app.ts)).
+- **Client**: dropped `getToken`/`setToken` localStorage helpers, dropped Bearer header. [client/src/lib/api.ts](client/src/lib/api.ts) now: (1) sets `credentials: 'include'` on every request; (2) reads `csrf_token` cookie via JS and attaches it as `X-CSRF-Token` on non-safe methods; (3) implements **silent refresh on 401** — if a request returns 401 (and isn't itself `/auth/refresh` or `/auth/login`), call `POST /auth/refresh`; if it succeeds, retry the original request once; if it fails, fire the `unauthorized` subscribers. Concurrent 401s share a single in-flight refresh promise to avoid stampede.
+- **AuthProvider** [client/src/lib/auth.tsx](client/src/lib/auth.tsx) — bootstraps via `GET /auth/me` on mount (silent 401 if not logged in), exposes `loading` until that resolves so `<ProtectedRoute>` doesn't bounce the user to `/login` on a hard refresh while the cookie is still valid. `logout()` is now async and calls `POST /auth/logout` server-side.
+- **chatStream** [client/src/lib/chatStream.ts](client/src/lib/chatStream.ts) — drops Bearer header, adds `credentials: 'include'` + `X-CSRF-Token` header (POST is non-safe).
+- **DocumentsPage upload** stripped its custom `Authorization` header; FormData uploads now ride the cookie + CSRF path through `apiFetch`.
+
+### Phase 8 — additional deferred items closed (low risk, independent)
+- **Real Pinecone adapter** [server/src/adapters/vector-store/pinecone.ts](server/src/adapters/vector-store/pinecone.ts) — `@pinecone-database/pinecone` SDK. Lazy-instantiated client + index (only constructed on first call so test boots and `VECTOR_STORE=pgvector` deployments don't import the SDK). Stores chunk content + `user_id`/`document_id`/`chunk_index` in record metadata so `query` results return content directly without a PG round-trip. `upsert` batches 100 records at a time. `deleteByDocument` uses metadata-filter `deleteMany` (serverless indexes only — pod-based indexes need ID enumeration; not added because nobody runs pod-based any more).
+- **Real Anthropic adapter** [server/src/adapters/llm/anthropic.ts](server/src/adapters/llm/anthropic.ts) — `@anthropic-ai/sdk` `messages.create({ stream: true })` returning `Stream<RawMessageStreamEvent>`. Yields only `content_block_delta` events of `type: 'text_delta'` (skips thinking/tool/citation deltas). System messages are extracted from the conversation and joined into the SDK's top-level `system` parameter (Anthropic's API doesn't accept system role inline). Lazy client construction matches the Pinecone pattern. Aborts via the SDK's `signal` request option.
+- **vitest suite** ([server/vitest.config.ts](server/vitest.config.ts) + [server/src/test-setup.ts](server/src/test-setup.ts)): 11 unit tests across 3 files — chunker (5: empty input, single-chunk shortness, target-size compliance, tiny-tail merging, token-estimate), prompt builder (2: ordering + empty-chunks fallback), credentialsSchema (4: lowercase normalization, bad email, short password, unknown field rejection). Setup file injects test env defaults so importing `env.ts` doesn't `process.exit`. tsconfig.json `exclude` pruned of `**/*.test.ts` so eslint type-checking + ts typecheck both cover tests; tsconfig.build.json keeps the exclude so `dist/` stays clean. Wired into CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) as `npm test` step in the server job.
+- **Client Dockerfile** [client/Dockerfile](client/Dockerfile): two-stage build — `node:20-alpine` runs `npm ci` + `npm run build`, then `nginx:1.27-alpine` serves `dist/` with [client/nginx.conf](client/nginx.conf). nginx config: SPA fallback (`try_files $uri /index.html`), aggressive cache for `/assets/`, `/api/*` reverse-proxied to `api:4000` with `proxy_buffering off` for SSE, no server tokens. New CI job `docker-client` builds the prod image as a smoke test.
+- **Prod-overlay compose** [docker-compose.prod.yml](docker-compose.prod.yml): adds a `client` service (port 8080→80) and overrides `api`/`worker` to use the `prod` Dockerfile target, drops the source bind-mount, swaps the dev `npm run …` command for `node dist/...`. Run with `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d`.
+
+⚠ Known follow-ups (Phase 8)
+- **Real-browser smoke still owed.** Server: typecheck ✅, lint ✅, build ✅, vitest ✅. Client: typecheck ✅, lint ✅, build ✅. End-to-end click-through (register → upload → chat with SSE → refresh-on-401 → logout) was not run because Docker Desktop wasn't up during the migration session.
+- **Refresh-token reuse detection** is single-use (old hash revoked on rotation) but does NOT yet trigger a full session purge if a revoked token is replayed (would indicate token theft). Add: on attempt to use a `revoked_at IS NOT NULL` row, revoke ALL refresh tokens for that user_id and force re-login.
+- **No expired-token cleanup job.** `refresh_tokens` rows accumulate after `expires_at`. Cheap fix: a once-daily worker job `DELETE FROM refresh_tokens WHERE expires_at < now() - interval '7 days'`.
+- **Pinecone adapter is unverified against a live index.** Code compiles + schema matches the SDK 6.x API surface, but no test pushed real vectors. Required first-time setup before a pinecone deployment.
+- **Anthropic adapter is unverified against a live API key.** Same caveat — code compiles, but no live stream verified end-to-end.
+
 ### ✅ Earlier scaffold
 
 **Phase 0 — Repo bootstrap**
@@ -141,16 +172,14 @@ Two commits on `main`:
 | Frontend scaffold (Phase 5) | ✅ **Done** — Vite + React + Tailwind + shadcn/ui; auth, chat (SSE), documents, history all wired through Vite `/api` proxy |
 | Landing + polish (Phase 6) | ✅ **Done** — landing page with scroll animations, dark mode toggle, code-split routes (354 KB → 253 KB initial), skeletons, bubble fade-in |
 | Prod hardening + CI (Phase 7) | ✅ **Substantially done** — global rate-limit, hardened pino redact, GitHub Actions CI, client ESLint flat config, compose health probes, prod Dockerfile verified. JWT cookie migration + Pinecone/Anthropic real impls + client Dockerfile + vitest deferred to Phase 8. |
-| Phase 8 — Deferred items | ⏳ **Not started** — JWT cookie+refresh, Pinecone, Anthropic, client Dockerfile, vitest suite |
+| Phase 8 — Closing deferred items | ✅ **Code-complete** — JWT cookie+refresh+CSRF migration, Pinecone real adapter, Anthropic real adapter, client Dockerfile + prod-overlay compose, vitest suite (11 tests). Real-browser smoke still owed. |
 
-### ⏭ Next steps (Phase 8 — Deferred hardening items)
-Each is a focused mini-phase; tackle in any order:
-1. **JWT cookie migration**: server emits `Set-Cookie: token=...; HttpOnly; Secure; SameSite=Lax`; new `POST /auth/refresh` rotates 15-min access tokens against a 7-day refresh token. CSRF: double-submit token cookie. Client: drop `lib/api.ts` Bearer header + `getToken/setToken` localStorage helpers; rely on `credentials: 'include'` on fetch. **Breaking** for FE/BE; coordinate single deploy.
-2. **Pinecone real adapter** [server/src/adapters/vector-store/pinecone.ts](server/src/adapters/vector-store/pinecone.ts) — `@pinecone-database/pinecone` upsert/query/deleteByDocument; env validator already gates `PINECONE_API_KEY`/`PINECONE_INDEX`.
-3. **Anthropic real adapter** [server/src/adapters/llm/anthropic.ts](server/src/adapters/llm/anthropic.ts) — `@anthropic-ai/sdk` `messages.stream` mapped to `AsyncIterable<string>` contract; only fires when `LLM_PROVIDER=anthropic`.
-4. **Client Dockerfile + prod-overlay compose** — multi-stage `node:20-alpine` build → `nginx:alpine` static-serve at port 80; `docker-compose.prod.yml` overlay swapping `api` to `target: prod`, removing dev bind-mounts, and adding the new `client` service.
-5. **vitest suite** — auth round-trip, ingest pipeline (parse → chunk shape), retrieval scoping per userId, chat persistence transaction. Already have `vitest` in devDeps, just need `*.test.ts` files alongside services.
-6. **Manual real-browser smoke** at 360 px against [.claude/rules/workflow.md](.claude/rules/workflow.md) checklist — register/login, upload, ingest, ask, see SSE deltas + citation, scroll animations on landing.
+### ⏭ Next steps (post-Phase 8)
+1. **Run the migration** locally: `cd server && npm run migrate` (creates `refresh_tokens`).
+2. **Manual real-browser smoke** at 360 px against [.claude/rules/workflow.md](.claude/rules/workflow.md) checklist — register/login (verify cookies set, no body token), upload (verify CSRF header sent), ingest, ask (verify SSE deltas + citation), wait 15+ min and submit a chat → expect silent `/auth/refresh` round-trip then a successful resend, logout (verify cookies cleared, `/auth/me` returns 401).
+3. **Refresh-token reuse detection** — on a `revoked_at IS NOT NULL` row redemption, revoke all sessions for that `user_id` (signals token theft). Small change in `rotateRefreshToken`.
+4. **Cleanup job for expired refresh tokens** — daily Bull job: `DELETE FROM refresh_tokens WHERE expires_at < now() - interval '7 days'`.
+5. **Live-API verification** of Pinecone + Anthropic adapters — both compile but neither has been pushed against a real index/key.
 
 ### ⚠ Known follow-ups / caveats (live)
 
@@ -171,16 +200,18 @@ Each is a focused mini-phase; tackle in any order:
 - `OPENAI_API_KEY=ollama` in `.env` is a placeholder string the OpenAI SDK requires; not an actual credential. Production must change `JWT_SECRET` and either set a real `OPENAI_API_KEY` (cloud) or keep the Ollama base URL.
 
 **Frontend caveats**
-- JWT in localStorage — deferred migration to httpOnly cookie + refresh token to Phase 8 (XSS surface).
-- Initial bundle 253 KB (gzip 82 KB) after Phase 6 code-split. If Phase 8 adds bigger deps, reconsider per-route splitting strategy.
+- JWT now lives in **httpOnly cookies** (Phase 8). XSS no longer steals the session. Code that historically read `localStorage['chatbot.token']` was deleted; do not reintroduce it.
+- The `csrf_token` cookie is intentionally **not** httpOnly so JS can copy it into `X-CSRF-Token`. That's the design (double-submit). Don't change it.
+- Hard-refresh of `/chat` on a still-valid cookie now does a `GET /auth/me` round-trip before deciding whether to redirect to `/login` — `<ProtectedRoute>` returns `null` (blank screen) during that 200–500 ms window. Don't replace the `null` with a spinner unless you're prepared for the spinner to flash on every reload.
+- Initial bundle 253 KB (gzip 82 KB) after Phase 6 code-split — Phase 8 didn't move the needle.
 - Client ESLint flat config landed in Phase 7; if you add new pages, run `npm --prefix client run lint` before committing. Husky lint-staged covers staged files automatically.
 - Mobile @ 360 px verified via build only, not real-device click-through.
-- Frontend Phases 5/6 and Phase 7 were code-verified (`typecheck`, `build`, `lint`, dev-server SPA routes return 200, SSE proxy round-trip, landing route serves Vietnamese copy) but **not** clicked through in a real browser session by the user yet.
+- Frontend Phases 5/6/7/8 were code-verified (`typecheck`, `build`, `lint`, dev-server SPA routes return 200, SSE proxy round-trip, landing route serves Vietnamese copy) but **not** clicked through in a real browser session by the user yet.
 
 **CI / ops**
 - GitHub Actions workflow ([.github/workflows/ci.yml](.github/workflows/ci.yml)) needs a remote on GitHub to actually fire — local repo only.
 - `docker compose` healthcheck for `worker` is liveness-only (process exists). A stuck Bull queue would not be detected.
-- Phase 8 deferred items ARE production-blocking for any deploy that exposes the app publicly: at minimum **JWT cookie migration** (XSS) before public launch.
+- `refresh_tokens` table grows unbounded — see Phase 8 known follow-ups. Add a daily cleanup job before the row count becomes a problem.
 
 ## Key Decisions & Rationale
 
@@ -253,6 +284,24 @@ Each is a focused mini-phase; tackle in any order:
 - **JWT decoded on the client to populate `user.email` without a `/me` round trip.** Token signature isn't verified client-side — the server still verifies on every request. We use the payload only for display.
 - **Sticky-to-bottom auto-scroll with a "scrolled-up" guard.** Standard chat UX: user scrolling up to read history must NOT be yanked back when new tokens stream. We track distance-from-bottom < 80 px to decide whether to auto-scroll.
 - **Message bubble accumulates `delta`s in React state directly.** No virtual list needed at chat-history scale (≤ 200 messages); `whitespace-pre-wrap` handles long content. Revisit if a single chat exceeds 1000 messages.
+
+### Phase 8 (Closing deferred items)
+- **Three cookies, not one.** Splitting `access_token` (15-min, path=`/`) from `refresh_token` (7-day, path=`/auth`) means the long-lived refresh cookie never rides on `/upload` or `/chat/*` requests — narrows the surface for a server-side bug to leak it via logs/echo. The third cookie `csrf_token` is intentionally JS-readable so the SPA can implement double-submit; this is the standard pattern.
+- **SHA-256 hash of refresh tokens stored in DB, raw token only in cookie.** A DB dump can't be replayed as login. (Bcrypt would be overkill — refresh tokens are 32 bytes of CSPRNG entropy, not human passwords; plain SHA-256 is sufficient against pre-image attacks at that entropy.)
+- **Single-use refresh-token rotation in one transaction.** `rotateRefreshToken` SELECTs the current row, UPDATEs it to revoked, INSERTs the new row, all under one connection inside `BEGIN/COMMIT`. Avoids the race where two concurrent refreshes both succeed and double-mint.
+- **Double-submit CSRF, not synchronizer-token.** Synchronizer-token (server stores expected token in session) needs server state; double-submit is stateless. Browser same-origin policy guarantees an attacker on `evil.com` can't read the `csrf_token` cookie value, so they can't forge `X-CSRF-Token`. SameSite=Lax on the auth cookies is a second layer.
+- **Silent refresh-on-401 in the API client, not a periodic refresh timer.** Periodic timer wastes requests when the user is idle and still races the access-token expiry. Driving refresh from the failure case is exact: refresh exactly when needed, single in-flight promise so concurrent 401s share one refresh.
+- **`<ProtectedRoute>` returns `null` (not a spinner) during the boot `/auth/me` round-trip.** A spinner would flash on every page load — too visible. The 200–500 ms blank window is invisible in practice. If we ever skin this, use a route-specific skeleton, not a spinner.
+- **`/auth/refresh` is exempt from the silent-refresh-on-401 retry**, otherwise we'd loop. Same for `/auth/login` (a 401 there is "wrong password", not "expired session").
+- **No Bearer fallback in `requireAuth`.** Clean break — no dual auth surface to test/secure. Phase 8 was chosen as a single deploy precisely because a half-migrated state was the worst of both worlds.
+- **CSRF guard mounted globally, exemptions encoded in the middleware** rather than only-where-needed. Failsafe: a future route added without thinking about CSRF inherits protection. Cost: `/auth/login` and `/auth/register` need explicit exempts (they have no session yet).
+- **Pinecone adapter stores chunk content in metadata** (under the 40 KB metadata cap, our 2 KB chunks fit easily). Lets `query` return citation content directly without a PG round-trip in a Pinecone deployment. Trade-off: doubles the per-record storage; acceptable for our scale.
+- **Pinecone + Anthropic clients are lazily constructed** (cached on first `getIndex()`/`getClient()`). Importing the adapter file doesn't open a network connection — cleaner test boot, and `VECTOR_STORE=pgvector` deployments don't pay any Pinecone SDK cost.
+- **vitest scope: pure functions only.** Auth round-trip / ingest pipeline / retrieval scoping all need real Postgres + Redis; running them in CI without testcontainers is more work than the test value. The 3 unit suites (chunker, prompt, schema) cover the most subtly-broken pure code; integration tests wait for a dedicated infrastructure pass.
+- **Test setup file injects env defaults** so `import './auth.js'` doesn't `process.exit(1)` on env validation. Cleaner than refactoring every service to accept an env parameter.
+- **tsconfig.json no longer excludes `**/*.test.ts`** — eslint + typecheck cover tests. tsconfig.build.json keeps the exclude so `dist/` stays clean. Two-file config split is worth this.
+- **Client served by nginx in prod, not Node.** Static files don't need a Node runtime; nginx is half the image size and handles the SPA `try_files` fallback + SSE proxying with zero JS. The `/api/*` proxy in `nginx.conf` mirrors the dev-server behavior so the FE can keep calling `/api/...` in both environments without env switches.
+- **`proxy_buffering off` in nginx for `/api/*`** — required for SSE. Default nginx buffers responses, which would batch up `delta` events into stutters.
 
 ## Build Plan (Checklist)
 
@@ -327,13 +376,13 @@ Work top-down. Do not skip a phase until every item in it is checked. Mark `[x]`
 - [x] CI pipeline ([.github/workflows/ci.yml](.github/workflows/ci.yml)): server lint+typecheck+build, client lint+typecheck+build, server prod Docker image build smoke.
 - [x] Health probes wired into compose: `api` calls `/health/ready` via wget; `worker` checks node/tsx process via `pidof`.
 - [x] Client ESLint flat config ([client/eslint.config.mjs](client/eslint.config.mjs)) — typescript-eslint + react + react-hooks + jsx-a11y + prettier; wired into root lint-staged for staged `client/src/**/*.{ts,tsx}`.
-- [ ] **Deferred to Phase 8 (each is a focused mini-phase):**
-  - JWT migration to httpOnly cookie + 15 m access + 7 d refresh + CSRF (breaking change for FE; needs coordinated deploy).
-  - Real Pinecone adapter (`@pinecone-database/pinecone`).
-  - Real Anthropic adapter (`@anthropic-ai/sdk` `messages.stream`).
-  - `client/Dockerfile` (multi-stage build → static-serve via nginx/caddy) + prod-overlay compose file.
-  - End-to-end test suite (vitest already installed; no tests written yet).
-- [ ] Final manual verification pass against [workflow.md](.claude/rules/workflow.md) checklist (real-browser click-through at 360 px, scroll animations).
+- [x] **Phase 8 (each was a focused mini-phase, code-complete):**
+  - [x] JWT migration to httpOnly cookie + 15 m access + 7 d refresh + CSRF.
+  - [x] Real Pinecone adapter (`@pinecone-database/pinecone`).
+  - [x] Real Anthropic adapter (`@anthropic-ai/sdk` `messages.create({ stream: true })`).
+  - [x] `client/Dockerfile` (multi-stage build → static-serve via nginx) + prod-overlay compose file.
+  - [x] vitest suite — 11 unit tests across chunker, prompt builder, credentialsSchema. Wired into CI server job.
+- [ ] Final manual verification pass against [workflow.md](.claude/rules/workflow.md) checklist (real-browser click-through at 360 px, scroll animations, login → cookie auth → upload → chat SSE → 15-min access expiry → silent refresh → logout).
 
 ## Rules
 

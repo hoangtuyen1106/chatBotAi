@@ -2,6 +2,7 @@ import type { RequestHandler } from 'express';
 import jwt from 'jsonwebtoken';
 
 import { env } from '../config/env.js';
+import { cookieNames } from '../services/auth.js';
 import { HttpError } from './errorHandler.js';
 
 declare module 'express-serve-static-core' {
@@ -11,13 +12,10 @@ declare module 'express-serve-static-core' {
 }
 
 export const requireAuth: RequestHandler = (req, _res, next) => {
-  const header = req.headers.authorization;
-  if (!header || !header.startsWith('Bearer ')) {
-    return next(new HttpError(401, 'Missing bearer token', 'unauthorized'));
-  }
-  const token = header.slice('Bearer '.length).trim();
+  const cookies = req.cookies as Record<string, string | undefined> | undefined;
+  const token = cookies?.[cookieNames.access];
   if (!token) {
-    return next(new HttpError(401, 'Missing bearer token', 'unauthorized'));
+    return next(new HttpError(401, 'Missing access token', 'unauthorized'));
   }
 
   try {

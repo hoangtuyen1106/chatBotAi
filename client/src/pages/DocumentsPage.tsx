@@ -5,7 +5,7 @@ import { AppShell } from '@/components/AppShell';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Skeleton } from '@/components/ui/skeleton';
-import { api, apiFetch, ApiError, getToken } from '@/lib/api';
+import { api, apiFetch, ApiError } from '@/lib/api';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 
@@ -81,10 +81,7 @@ export const DocumentsPage = () => {
       try {
         const form = new FormData();
         form.append('file', file);
-        const token = getToken();
-        const init: RequestInit = { method: 'POST', body: form };
-        if (token) init.headers = { Authorization: `Bearer ${token}` };
-        const res = await apiFetch('/upload', init);
+        const res = await apiFetch('/upload', { method: 'POST', body: form });
         if (!res.ok) {
           const text = await res.text();
           throw new Error(text || `HTTP ${res.status}`);
